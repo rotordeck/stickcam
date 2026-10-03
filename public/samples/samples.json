@@ -1,0 +1,23 @@
+[
+  {
+    "id": "whoop-session",
+    "title": "Whoop session",
+    "blurb": "Indoor whoop, full-deflection stick work",
+    "file": "whoop-session.bbl",
+    "duration": 17.07214
+  },
+  {
+    "id": "the-tumble",
+    "title": "The tumble",
+    "blurb": "Snap, then a 2500°/s tumble",
+    "file": "the-tumble.bbl",
+    "duration": 11.271873
+  },
+  {
+    "id": "finale",
+    "title": "Finale",
+    "blurb": "Last ten seconds of a 94 s pack",
+    "file": "finale.bbl",
+    "duration": 11.798572
+  }
+]

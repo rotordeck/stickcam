@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>StickCam</title>
+  <meta name="description" content="Turn a Betaflight blackbox log into a stick-cam overlay video, from clean to completely over the top. Runs entirely in your browser." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='18' cy='32' r='14' fill='none' stroke='%23ffe14d' stroke-width='4'/%3E%3Ccircle cx='46' cy='32' r='14' fill='none' stroke='%23ffe14d' stroke-width='4'/%3E%3Ccircle cx='22' cy='24' r='5' fill='%23ff3b3b'/%3E%3Ccircle cx='52' cy='34' r='5' fill='%23ff3b3b'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="logo" aria-hidden="true"><i></i><i></i></span>StickCam</div>
+    <p class="tag">Blackbox log in, stick-cam overlay video out. Everything runs in your browser; your log never leaves it.</p>
+  </header>
+
+  <main class="app">
+    <aside class="panel" id="panel">
+      <section>
+        <h2>1 · Log</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept=".bbl,.bfl,.txt,.BBL,.BFL,.TXT,video/*" multiple hidden />
+          <strong>Drop a blackbox log</strong>
+          <span>.bbl / .bfl from Betaflight, or click to pick. Drop your FPV video too to sync to it.</span>
+        </label>
+        <label class="drop video-drop">
+          <input type="file" id="videoFile" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" hidden />
+          <strong>+ Add your FPV video</strong>
+          <span>Optional: preview on your footage, auto-sync, and export at its exact length and frame rate</span>
+        </label>
+        <div class="samples" id="samples"><span class="muted">Or try a sample:</span></div>
+        <div id="flights" class="flights"></div>
+        <p id="status" class="status" role="status"></p>
+      </section>
+
+      <section>
+        <h2>2 · Style</h2>
+        <div class="presets" id="presets"></div>
+      </section>
+
+      <section>
+        <h2>3 · Tweak</h2>
+        <div id="params" class="params"></div>
+      </section>
+
+      <section>
+        <h2>4 · Export</h2>
+        <div class="params" id="output"></div>
+        <button class="go" id="export" disabled>Export video</button>
+        <p class="hint" id="formatHint"></p>
+      </section>
+    </aside>
+
+    <section class="stage-wrap">
+      <div class="stage" id="stage" data-bg="sky">
+        <div class="frame" id="frame"><video id="vid" playsinline preload="auto" hidden></video><canvas id="preview"></canvas></div>
+        <div class="empty" id="empty">Load a log or pick a sample to start</div>
+      </div>
+      <div class="transport">
+        <button id="play" class="icon" aria-label="Play" disabled>▶</button>
+        <span id="time" class="time">0:00.00</span>
+        <div class="bg-pick" role="group" aria-label="Preview background">
+          <button data-bg="sky" class="on">Sky</button><button data-bg="checker">Alpha</button><button data-bg="dark">Dark</button><button data-bg="green">Green</button>
+        </div>
+      </div>
+      <div class="syncbar" id="syncbar" hidden>
+        <div class="sync-ctl" id="syncCtl"></div>
+        <p class="sync-note" id="syncNote"></p>
+      </div>
+      <div class="timeline" id="timeline">
+        <canvas id="tl"></canvas>
+        <div class="trim" id="trim"><div class="h in" id="hin"></div><div class="h out" id="hout"></div></div>
+        <div class="head" id="head"></div>
+      </div>
+      <p class="tl-legend"><span><i class="k trick"></i>trick</span><span><i class="k snap"></i>snap</span><span><i class="k punch"></i>punch</span><span>Drag the handles to trim · click to scrub · space to play · with a video, drag the flight lane to sync</span></p>
+    </section>
+  </main>
+
+  <dialog id="exportDlg">
+    <h3 id="exTitle">Exporting…</h3>
+    <progress id="exBar" max="1" value="0"></progress>
+    <p id="exPhase" class="muted"></p>
+    <div class="dlg-actions">
+      <a id="exSave" class="go" hidden>Save video</a>
+      <button id="exCancel">Cancel</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

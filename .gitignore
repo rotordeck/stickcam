@@ -1,0 +1,8 @@
+.dev-out
+node_modules
+dist
+# exports dropped next to the project
+/stickcam_*.*
+/*.mp4
+/*.webm
+/*.mov
