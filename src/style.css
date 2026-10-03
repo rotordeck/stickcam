@@ -35,6 +35,24 @@ button, input, select { font: inherit; color: inherit; }
 .drop { display: grid; gap: 2px; place-items: center; text-align: center; padding: 18px 12px; border: 1.5px dashed var(--line); border-radius: var(--radius); cursor: pointer; background: var(--panel); transition: border-color .15s, background .15s; }
 .drop:hover, .drop.over { border-color: var(--accent); background: var(--panel-2); }
 .drop span { color: var(--muted); font-size: 12.5px; }
+.fc { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+dialog.wide { width: min(560px, 94vw); max-height: 90vh; overflow: auto; }
+.fcs { display: grid; gap: 10px; }
+.fcs h3 { margin: 0; }
+.fcs p { margin: 0; }
+.fcfields { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 4px 12px; }
+.fcfield { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.fcfield small { color: var(--accent); font-size: 11px; }
+.fcfield input { accent-color: var(--accent); }
+.fcest { font-size: 12.5px; color: var(--muted); }
+.fcwarn, .err { color: #ff8a8a; font-size: 12.5px; }
+.fcchanges { margin: 0; padding-left: 18px; font-size: 12.5px; }
+.fcs .seg { grid-column: auto; justify-self: start; }
+.fcs .row { grid-template-columns: 70px 1fr; }
+.fcs .row select { grid-column: auto; }
+button.danger { border-color: #ff8a8a; color: #ff8a8a; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.chip:disabled { opacity: .5; cursor: not-allowed; }
 .samples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; align-items: center; }
 .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 10px; cursor: pointer; font-size: 12.5px; }
 .chip:hover { border-color: var(--accent); }
@@ -110,7 +128,7 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--l
 dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
 dialog h3 { margin: 0 0 12px; }
 dialog progress { width: 100%; height: 10px; accent-color: var(--accent); }
-.dlg-actions { display: flex; gap: 10px; align-items: center; }
+.dlg-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .dlg-actions .go { margin-top: 6px; }
 .dlg-actions button:not(.go) { margin-top: 6px; padding: 9px 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel-2); cursor: pointer; }
 

@@ -23,6 +23,11 @@
           <strong>Drop a blackbox log</strong>
           <span>.bbl / .bfl from Betaflight, or click to pick. Drop your FPV video too to sync to it.</span>
         </label>
+        <div class="fc">
+          <button id="fcRead" class="chip" title="Plug the whoop in over USB and download its onboard blackbox flash (Chrome, Edge or Opera)">Read from flight controller</button>
+          <button id="fcSettings" class="chip" title="Choose what the flight controller logs, so 16 MB of flash lasts much longer">Logging settings…</button>
+          <button id="fcSave" class="chip" hidden title="Save the downloaded log as a .bbl file">Save .bbl</button>
+        </div>
         <label class="drop video-drop">
           <input type="file" id="videoFile" accept="video/*,.mp4,.mov,.m4v,.webm,.mkv" hidden />
           <strong>+ Add your FPV video</strong>
@@ -75,6 +80,8 @@
       <p class="tl-legend"><span><i class="k trick"></i>trick</span><span><i class="k snap"></i>snap</span><span><i class="k punch"></i>punch</span><span>Drag the handles to trim · click to scrub · space to play · with a video, drag the flight lane to sync</span></p>
     </section>
   </main>
+
+  <dialog id="fcDlg" class="wide"></dialog>
 
   <dialog id="exportDlg">
     <h3 id="exTitle">Exporting…</h3>

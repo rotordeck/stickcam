@@ -121,3 +121,10 @@ video File ─ openVideo → VideoInfo ─ analyzeFlow → FlowSample[] ─ find
 | Synced overlay length equals video length (189.207 s vs 189.202 s) | ffprobe |
 | Auto-sync: flight 1 at 88.92 s, flight 3 at 144.01 s (OSD truth ≈89 / 144) | browser + Node |
 | Linux Chrome: `canEncodeAudio('aac') === false`, `opus === true` | in-page probe |
+
+## Flight controller logging (what StickCam needs)
+
+- **Minimum fields:** RC commands (sticks + throttle → overlay) and filtered gyro (flip/roll/spin integration in `motion.ts`, pan↔gyro correlation in `sync.ts`). Armed state comes from the S-frames, which are always logged. Motors only feed a hint (`motorMean`, falls back to throttle). Everything else is optional.
+- **Rate:** 1/16 of the PID loop (250 Hz at 4 kHz) is plenty for 30-60 fps output; 1/8 for faster tricks.
+- **Wire:** `MSP_BLACKBOX_CONFIG` (80) / `MSP_SET_BLACKBOX_CONFIG` (81) carry device, rate index and, from API 1.45, a u32 *disabled* mask (bit set = field off). Bit order per API: PID, RC, setpoint, battery, mag, alt, RSSI, gyro, [attitude ≥1.47], acc, debug, motor, GPS, RPM, gyro-unfiltered, [servo ≥1.47], [pitot ≥1.49]. Persist with `MSP_EEPROM_WRITE` (250). Always read-modify-write.
+- **Estimate:** `estimate()` in `blackbox.ts` is a rough per-field byte model (default config ≈ 7 min, StickCam ≈ 140 min in 16 MB at a 4 kHz loop). Recalibrate against a real log once one exists.

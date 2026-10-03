@@ -11,6 +11,8 @@ import { DEFAULT_SETTINGS, SIZE_PRESETS, computeLayout, type Settings } from './
 import { createScene, renderFrame, type Scene } from './render/draw.ts';
 import { capabilities, runExport, type Format } from './export/export.ts';
 import { analyzeFlow, openVideo, type VideoInfo } from './video.ts';
+import { initFcDialog } from './fc/dialog.ts';
+import { FcLink, fcSupported, pullDataflash } from './fc/fc.ts';
 import { findOffset, type SyncResult } from './sync.ts';
 
 // ---------- state ----------
@@ -103,6 +105,9 @@ async function selectFlight(i: number) {
   setData(data);
   const h = data.flight.header;
   status(`${h.craft || 'Unnamed craft'} · ${h.firmware} · ${data.sig.duration.toFixed(1)} s · ${Math.round(data.sig.fs)} Hz`);
+  // A log made with RC or gyro logging switched off can't drive the overlay: point at the fix.
+  if (!data.sig.stick[0]) status('This log has no RC commands, so there are no sticks to show. Switch RC logging on (Logging settings…) and fly again.', true);
+  else if (!data.sig.gyro[0]) status(`${$('status').textContent} · no gyro in this log: tricks and video auto-sync are unavailable (Logging settings…).`, true);
 }
 
 function loadDemo() {
@@ -776,6 +781,41 @@ for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, () => drop.cla
 // Logs and videos can be dropped anywhere on the page, together or one at a time.
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => { e.preventDefault(); void openFiles((e as DragEvent).dataTransfer?.files); });
+
+// ---------- read the log off the flight controller (WebSerial + MSP) ----------
+
+const fcRead = $<HTMLButtonElement>('fcRead'), fcSave = $<HTMLButtonElement>('fcSave');
+let fcLog: Uint8Array | null = null;
+let fcDownloaded = 0; // bytes pulled off the FC this session; erasing the flash is only offered after one
+initFcDialog($<HTMLDialogElement>('fcDlg'), $<HTMLButtonElement>('fcSettings'), { downloadedBytes: () => fcDownloaded, onErased: () => { fcDownloaded = 0; } });
+if (!fcSupported()) { $<HTMLButtonElement>('fcSettings').disabled = true; fcRead.disabled = true; fcRead.title = 'Needs Web Serial: use Chrome, Edge or Opera'; }
+fcRead.onclick = async () => {
+  fcRead.disabled = true;
+  let link: FcLink | null = null;
+  try {
+    link = await FcLink.connect();
+    status('Connected. Reading the blackbox flash…');
+    const bytes = await pullDataflash(link, (f, n) => status(`Reading blackbox from flight controller… ${Math.round(f * 100)} % (${(n / 1024).toFixed(0)} KB)`));
+    fcLog = bytes;
+    fcDownloaded = bytes.length;
+    fcSave.hidden = false;
+    markSample('');
+    await loadBytes(bytes, `fc-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.bbl`);
+  } catch (e) {
+    status((e as Error).message, true);
+  } finally {
+    await link?.close();
+    fcRead.disabled = !fcSupported();
+  }
+};
+fcSave.onclick = () => {
+  if (!fcLog) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([fcLog as BlobPart], { type: 'application/octet-stream' }));
+  a.download = S.name.endsWith('.bbl') ? S.name : 'blackbox.bbl';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
 
 function markSample(id: string) {
   document.querySelectorAll<HTMLElement>('#samples .chip').forEach((c) => c.classList.toggle('on', c.dataset.id === id));
