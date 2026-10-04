@@ -49,7 +49,21 @@
       </section>
 
       <section>
-        <h2>4 · Export</h2>
+        <h2>4 · Presets</h2>
+        <div class="up-save">
+          <input id="upName" type="text" maxlength="60" placeholder="Name this look" aria-label="Preset name" />
+          <button id="upSave" class="chip" title="Save the current style, tweaks, stick mode, size and position">Save current</button>
+        </div>
+        <div class="presets up-list" id="upList"></div>
+        <div class="fc up-files">
+          <button id="upExport" class="chip" title="Save all your presets to a JSON file">Export presets…</button>
+          <button id="upImport" class="chip" title="Load presets from a JSON file">Import presets…</button>
+          <input type="file" id="upFile" accept=".json,application/json" hidden />
+        </div>
+      </section>
+
+      <section>
+        <h2>5 · Export</h2>
         <div class="params" id="output"></div>
         <button class="go" id="export" disabled>Export video</button>
         <p class="hint" id="formatHint"></p>
@@ -58,7 +72,7 @@
 
     <section class="stage-wrap">
       <div class="stage" id="stage" data-bg="sky">
-        <div class="frame" id="frame"><video id="vid" playsinline preload="auto" hidden></video><canvas id="preview"></canvas></div>
+        <div class="frame" id="frame"><div class="sky" aria-hidden="true"><div class="sky-world" id="skyWorld"></div></div><video id="vid" playsinline preload="auto" hidden></video><canvas id="preview"></canvas></div>
         <div class="empty" id="empty">Load a log or pick a sample to start</div>
       </div>
       <div class="transport">
@@ -82,6 +96,7 @@
   </main>
 
   <dialog id="fcDlg" class="wide"></dialog>
+  <dialog id="upDlg" class="wide"></dialog>
 
   <dialog id="exportDlg">
     <h3 id="exTitle">Exporting…</h3>

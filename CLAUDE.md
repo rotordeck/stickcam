@@ -11,7 +11,7 @@ Owner: Hans (HansF). Started 2026-10-03 as a spin-off of `~/Projects/fpvstream`,
 ```sh
 npm install
 npm run dev        # Vite dev server (the author uses --port 5199); opens on the Freestyle demo
-npm test           # vitest: decoder, track, motion events, layout, flow/sync, fps snapping (25 tests)
+npm test           # vitest: decoder, track, motion events, layout, flow/sync, fps snapping, FC, logging settings, user presets (32 tests)
 npm run build      # tsc --noEmit + vite build → dist/ (≈2 MB incl. samples). BASE=/sub/ for sub-path hosting
 npx tsc --noEmit   # typecheck only
 node scripts/make-samples.ts   # re-cut public/samples/*.bbl from the real logs (needs ../fpvstream + ../betamcp)
@@ -37,12 +37,13 @@ Node 26 runs the `.ts` modules directly (type stripping). For that reason:
 | `src/video.ts` | Opens the video with Mediabunny (size, fps snapping, duration) and runs the motion pass through a `CanvasSink`. |
 | `src/fc/fc.ts`, `huffman.ts` | **Read the log off the whoop**: WebSerial + minimal MSP v1 client (jumbo frames), `MSP_DATAFLASH_SUMMARY`/`READ` loop with Huffman decompression, 4096-byte blocks, retry on CRC/timeout. Ported from betaflight-configurator (`MSPHelper.dataflashRead`, `useDataflashPull.js`); the tree is a verbatim copy. Flash only: SD-card logs can't be read over MSP. Also the blackbox config calls (`apiMinor`, `getBlackboxConfig`, `setBlackboxConfig` = set → EEPROM write → read-back, `eraseFlash`). |
 | `src/fc/blackbox.ts`, `dialog.ts` | **Logging settings** (pure): field table with the disabled-mask bit order per API version, config codec (MSP 80/81), profiles (StickCam = RC+gyro @1/16, Balanced @1/8, Betaflight default), size estimate, diff text, CLI commands. `dialog.ts` is the "Logging settings…" dialog (own serial connection while open; previous settings kept in localStorage for "Restore previous"; erase only after a full download this session, double-click confirm). |
+| `src/presets.ts` | **User presets (saved looks)**, pure: a look = base `presetId` + Tweak `overrides` + gimbal settings (mode, size, gap, position, chaos, offsets); output size/fps/format are deliberately left out. localStorage key `stickcam.presets.v1`, JSON file `{app:'stickcam', kind:'presets', version:1, presets}`, sanitizing, import plan (new / identical / name clash, case-insensitive) and apply (skip / add / overwrite / keep both → "Name (2)"). UI in `main.ts` (section "4 · Presets", dialog `#upDlg`). |
 | `src/demo.ts` | Synthetic freestyle flight, scripted so every effect fires (tests rely on its event list). |
 | `src/main.ts` | The whole UI: state `S`, loading, timeline, playback, sync bar, presets, tweak panel, export dialog, dev hook. |
 | `index.html`, `src/style.css` | Layout: left panel (log → style → tweak → export), right stage + transport + sync bar + timeline. |
 | `public/samples/` | Three short real-log clips + `samples.json` (the author's own flights; the repo is private). |
 | `scripts/make-samples.ts` | Cuts the sample clips: original header + a byte slice of data. The decoder resyncs on the next I-frame. |
-| `test/` | `pipeline.test.ts` (decoder/track/motion/layout), `sync.test.ts` (flow, synthetic-video auto-sync, fps), `fc.test.ts` (fake FC: download raw/Huffman/corrupt frame, config write, erase), `blackbox.test.ts` (mask order, codec, profiles, estimate). |
+| `test/` | `pipeline.test.ts` (decoder/track/motion/layout), `sync.test.ts` (flow, synthetic-video auto-sync, fps), `fc.test.ts` (fake FC: download raw/Huffman/corrupt frame, config write, erase), `blackbox.test.ts` (mask order, codec, profiles, estimate), `presets.test.ts` (file round trip, sanitizing, import plan/apply). |
 
 Read `docs/architecture.md` for the design detail: clocks, render model, sync algorithm, export pipelines, verified facts.
 
@@ -72,6 +73,8 @@ Done and verified in Chrome and with ffprobe:
 - "Read from flight controller" button (Chrome/Edge/Opera only): downloads the onboard flash over USB, loads it, and offers "Save .bbl". **Only tested against a fake FC, not real hardware yet.** "Logging settings…" dialog writes the blackbox field mask and rate (StickCam needs only RC + filtered gyro; everything else wastes the 16 MB flash). The mask bit order comes from betaflight-configurator and is verified by read-back only: check once with `diff` in the CLI on a real board.
 - Log loading (multi-flight, legacy-dump repair), demo, 3 real sample clips.
 - 8 presets with live thumbnails. The Tweak panel covers chaos, colours, every effect, frame shape, particle shape, mode 1/2, size, spacing, position and X/Y nudge. Settings are kept in the URL hash.
+- Sky preview background flies with the sticks while playing (horizon banks and pitches; preview only).
+- Presets section: save the current look under a name (kept in localStorage, live thumbnails, click to apply, Update/Rename/Delete), export all to a JSON file, import with a clash dialog (Overwrite all / Keep mine / Choose per look with Overwrite or Keep both).
 - Timeline with activity, throttle and event markers, trim handles, scrub, playback, keyboard (space, ←/→, shift = 10 frames).
 - Exports:
   - WebM VP9 alpha: 1080p30 20 s in 4.8 s.

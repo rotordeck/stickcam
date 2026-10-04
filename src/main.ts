@@ -14,6 +14,10 @@ import { analyzeFlow, openVideo, type VideoInfo } from './video.ts';
 import { initFcDialog } from './fc/dialog.ts';
 import { FcLink, fcSupported, pullDataflash } from './fc/fc.ts';
 import { findOffset, type SyncResult } from './sync.ts';
+import {
+  LOOK_SETTINGS, applyImport, defaultChoices, exportFile, findByName, loadPresets, lookEquals, newId, parseImport, planImport, sanitizeLook, savePresets,
+  type ImportChoice, type ImportItem, type Look, type UserPreset,
+} from './presets.ts';
 
 // ---------- state ----------
 
@@ -61,6 +65,7 @@ function saveHash() {
   const { mode, size, gap, position, chaos, fps, offsetX, offsetY } = S.settings;
   const st = { p: S.presetId, o: S.overrides, s: { mode, size, gap, position, chaos, fps, offsetX, offsetY }, z: S.sizeId, f: S.format };
   history.replaceState(null, '', '#' + btoa(unescape(encodeURIComponent(JSON.stringify(st)))));
+  markUserPresets(); // every look change ends up here
 }
 function loadHash() {
   try {
@@ -206,9 +211,28 @@ function rebuildScene() {
   updateHint();
 }
 
+// The Sky preview background flies with the sticks while playing: roll banks the horizon, pitch moves it.
+// Preview only (a DOM layer under the canvas), never exported. The pose is a pure function of the frame,
+// a mean over the last SKY_WIN seconds of sticks, so it stays smooth and seeking can't make it drift.
+const skyWorld = $('skyWorld');
+const SKY_WIN = 0.3, SKY_BANK = 32, SKY_PITCH = 0.12; // s, degrees at full roll, horizon shift (fraction of world) at full pitch
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function updateSky() {
+  const fly = S.playing && !!S.cur && !reducedMotion.matches && stage.dataset.bg === 'sky' && !S.video;
+  skyWorld.classList.toggle('flying', fly);
+  if (!fly) { skyWorld.style.transform = ''; return; }
+  const { roll, pitch, live, fps } = S.cur!.track;
+  const n = Math.max(1, Math.round(SKY_WIN * fps));
+  let r = 0, p = 0;
+  for (let i = Math.max(0, S.frame - n + 1); i <= S.frame; i++) if (live[i]) { r += roll[i]; p += pitch[i]; }
+  r /= n; p /= n;
+  skyWorld.style.transform = `translateY(${(-p * SKY_PITCH * 100).toFixed(2)}%) rotate(${(-r * SKY_BANK).toFixed(2)}deg)`;
+}
+
 function draw() {
   if (!S.scene) return;
   renderFrame(pctx, S.scene, S.frame, null);
+  updateSky();
   const t = S.trim[0] + S.frame / S.settings.fps;
   $('time').textContent = fmtTime(t);
   placeHead();
@@ -230,6 +254,7 @@ let raf = 0, playT0 = 0, playF0 = 0;
 function setPlaying(on: boolean) {
   S.playing = on && !!S.cur;
   $('play').textContent = S.playing ? '❚❚' : '▶';
+  updateSky(); // pausing eases the horizon back to level
   cancelAnimationFrame(raf);
   if (!S.playing) { if (S.video) vid.pause(); return; }
   if (S.video) {
@@ -532,23 +557,232 @@ function showcaseFrame(m: Motion, n: number, fps: number) {
   return best;
 }
 
-function renderThumbs() {
+function drawThumb(cv: HTMLCanvasElement, st: Style, settings: Settings) {
   if (!S.cur) return;
   const { track, motion } = S.cur;
   const f = showcaseFrame(motion, track.frames, track.fps);
+  const set = { ...settings, crop: true, cropRef: 1080 };
+  const L = computeLayout(set);
+  const scale = Math.min(cv.width / L.W, cv.height / L.H);
+  const sc = createScene(track, motion, st, set, scale);
+  const off = new OffscreenCanvas(Math.round(L.W * scale), Math.round(L.H * scale));
+  renderFrame(off.getContext('2d')!, sc, f, null);
+  const c = cv.getContext('2d')!;
+  c.clearRect(0, 0, cv.width, cv.height);
+  c.drawImage(off, (cv.width - off.width) / 2, (cv.height - off.height) / 2);
+}
+
+let userThumbsFor: Track | null = null;
+function renderThumbs() {
+  if (!S.cur) return;
   for (const p of PRESETS) {
     const cv = thumbs.get(p.id);
-    if (!cv) continue;
-    const set = { ...S.settings, crop: true, cropRef: 1080 };
-    const L = computeLayout(set);
-    const scale = Math.min(cv.width / L.W, cv.height / L.H);
-    const sc = createScene(track, motion, p.style, set, scale);
-    const off = new OffscreenCanvas(Math.round(L.W * scale), Math.round(L.H * scale));
-    renderFrame(off.getContext('2d')!, sc, f, null);
-    const c = cv.getContext('2d')!;
-    c.clearRect(0, 0, cv.width, cv.height);
-    c.drawImage(off, (cv.width - off.width) / 2, (cv.height - off.height) / 2);
+    if (cv) drawThumb(cv, p.style, S.settings);
   }
+  // Saved looks carry their own settings, so they only need redrawing when the flight changes.
+  if (userThumbsFor !== S.cur.track) renderUserThumbs();
+}
+
+// ---------- the user's own presets (saved looks) ----------
+
+let userPresets = loadPresets();
+const userThumbs = new Map<string, HTMLCanvasElement>();
+
+const currentLook = (): Look => sanitizeLook({
+  presetId: S.presetId,
+  overrides: structuredClone(S.overrides),
+  settings: Object.fromEntries(LOOK_SETTINGS.map((k) => [k, S.settings[k]])),
+});
+
+function lookStyle(l: Look): Style { return { ...presetById(l.presetId).style, ...l.overrides }; }
+
+function renderUserThumbs() {
+  if (!S.cur) return;
+  userThumbsFor = S.cur.track;
+  for (const p of userPresets) {
+    const cv = userThumbs.get(p.id);
+    if (cv) drawThumb(cv, lookStyle(p.look), { ...S.settings, ...p.look.settings });
+  }
+}
+
+/** Highlight the saved look that matches what's on screen, if any. */
+function markUserPresets() {
+  const cur = currentLook();
+  for (const p of userPresets) userThumbs.get(p.id)?.parentElement?.classList.toggle('on', lookEquals(cur, p.look));
+}
+
+function storeUserPresets() {
+  if (!savePresets(userPresets)) status('Could not save presets: this browser blocks local storage. Use "Export presets…" to keep them.', true);
+  buildUserPresets();
+}
+
+function applyLook(p: UserPreset) {
+  const modeChanged = p.look.settings.mode !== S.settings.mode;
+  S.presetId = p.look.presetId;
+  S.overrides = structuredClone(p.look.overrides);
+  Object.assign(S.settings, p.look.settings);
+  document.querySelectorAll('#presets .preset').forEach((x, i) => x.classList.toggle('on', PRESETS[i].id === S.presetId));
+  buildParams();
+  if (modeChanged) { rebuildCur(); drawTimeline(); } else { rebuildScene(); renderThumbs(); }
+  saveHash();
+  status(`Applied “${p.name}”`);
+}
+
+/** A chip that needs a second click within 3 s to fire. */
+function confirmChip(label: string, ask: string, onConfirm: () => void) {
+  const b = document.createElement('button');
+  b.className = 'chip'; b.textContent = label;
+  let timer = 0;
+  b.onclick = (e) => {
+    e.stopPropagation();
+    if (!timer) { b.textContent = ask; timer = window.setTimeout(() => { timer = 0; b.textContent = label; }, 3000); return; }
+    clearTimeout(timer); timer = 0; b.textContent = label;
+    onConfirm();
+  };
+  return b;
+}
+
+function buildUserPresets() {
+  const el = $('upList');
+  el.innerHTML = '';
+  userThumbs.clear();
+  document.querySelector('.up-empty')?.remove();
+  if (!userPresets.length) {
+    const p = document.createElement('p'); p.className = 'up-empty';
+    p.textContent = 'Nothing saved yet. Tweak a look and save it here.';
+    el.before(p);
+  }
+  for (const p of userPresets) {
+    const card = document.createElement('div');
+    card.className = 'preset'; card.tabIndex = 0; card.role = 'button';
+    card.title = `Apply “${p.name}”`;
+    const cv = document.createElement('canvas');
+    cv.width = 320; cv.height = 180;
+    userThumbs.set(p.id, cv);
+    const info = document.createElement('div');
+    const b = document.createElement('b'); b.textContent = p.name;
+    const small = document.createElement('small'); small.textContent = `on ${presetById(p.look.presetId).name}`;
+    info.append(b, small);
+    const acts = document.createElement('div'); acts.className = 'up-acts';
+    const upd = confirmChip('Update', 'Overwrite?', () => { p.look = currentLook(); p.updated = Date.now(); storeUserPresets(); status(`Updated “${p.name}”`); });
+    upd.title = 'Replace this preset with the current look';
+    const ren = document.createElement('button'); ren.className = 'chip'; ren.textContent = 'Rename';
+    ren.onclick = (e) => {
+      e.stopPropagation();
+      const name = prompt('New name', p.name)?.trim().slice(0, 60);
+      if (!name || name === p.name) return;
+      const clash = findByName(userPresets, name);
+      if (clash && clash !== p) { status(`There is already a preset called “${clash.name}”.`, true); return; }
+      p.name = name; p.updated = Date.now(); storeUserPresets();
+    };
+    const del = confirmChip('Delete', 'Really delete?', () => { userPresets = userPresets.filter((x) => x !== p); storeUserPresets(); status(`Deleted “${p.name}”`); });
+    acts.append(upd, ren, del);
+    card.append(cv, info, acts);
+    card.onclick = () => applyLook(p);
+    card.onkeydown = (e) => { if (e.target === card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); applyLook(p); } };
+    el.appendChild(card);
+  }
+  $<HTMLButtonElement>('upExport').disabled = !userPresets.length;
+  renderUserThumbs();
+  markUserPresets();
+}
+
+const upName = $<HTMLInputElement>('upName'), upSave = $<HTMLButtonElement>('upSave');
+let upConfirm = 0;
+function resetUpSave() { clearTimeout(upConfirm); upConfirm = 0; upSave.textContent = 'Save current'; }
+upName.oninput = resetUpSave;
+upName.onkeydown = (e) => { if (e.key === 'Enter') upSave.click(); };
+upSave.onclick = () => {
+  const name = upName.value.trim().slice(0, 60);
+  if (!name) { upName.focus(); status('Give the look a name first.', true); return; }
+  const existing = findByName(userPresets, name);
+  if (existing && !upConfirm) {
+    upSave.textContent = `Overwrite “${existing.name}”?`;
+    upConfirm = window.setTimeout(resetUpSave, 3000);
+    return;
+  }
+  resetUpSave();
+  if (existing) { existing.look = currentLook(); existing.updated = Date.now(); }
+  else userPresets.push({ id: newId(), name, look: currentLook(), updated: Date.now() });
+  storeUserPresets();
+  upName.value = '';
+  status(existing ? `Overwrote “${existing.name}”` : `Saved “${name}”`);
+};
+
+$('upExport').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([exportFile(userPresets)], { type: 'application/json' }));
+  const d = new Date(), p2 = (n: number) => String(n).padStart(2, '0');
+  a.download = `stickcam-presets-${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+const upFile = $<HTMLInputElement>('upFile');
+$('upImport').onclick = () => upFile.click();
+upFile.onchange = async () => {
+  const file = upFile.files?.[0];
+  upFile.value = '';
+  if (!file) return;
+  let incoming: UserPreset[];
+  try { incoming = parseImport(await file.text()); } catch (e) { status(`Import failed: ${(e as Error).message}`, true); return; }
+  const plan = planImport(userPresets, incoming);
+  if (!plan.some((it) => it.kind === 'conflict')) finishImport(plan, defaultChoices(plan, 'skip'));
+  else openImportDialog(plan);
+};
+
+function finishImport(plan: ImportItem[], choices: ImportChoice[]) {
+  const { list, counts } = applyImport(userPresets, plan, choices);
+  userPresets = list;
+  storeUserPresets();
+  const same = plan.filter((it) => it.kind === 'same').length;
+  const parts = [`${counts.added} added`];
+  if (counts.overwritten) parts.push(`${counts.overwritten} overwritten`);
+  if (same) parts.push(`${same} already there`);
+  if (counts.skipped - same > 0) parts.push(`${counts.skipped - same} skipped`);
+  status(`Imported presets: ${parts.join(', ')}.`);
+}
+
+function openImportDialog(plan: ImportItem[]) {
+  const dlg = $<HTMLDialogElement>('upDlg');
+  const n = (k: ImportItem['kind']) => plan.filter((it) => it.kind === k).length;
+  const h = document.createElement('h3'); h.textContent = 'Import presets';
+  const p = document.createElement('p'); p.className = 'muted';
+  p.textContent = `${plan.length} in the file: ${n('new')} new, ${n('same')} identical, ${n('conflict')} with the same name as one of yours but a different look.`;
+  const items = document.createElement('div'); items.className = 'up-items'; items.hidden = true;
+  const choices = defaultChoices(plan, 'overwrite');
+  plan.forEach((it, i) => {
+    if (it.kind === 'same') return;
+    const r = document.createElement('div'); r.className = 'up-item';
+    const lab = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true;
+    const small = document.createElement('small'); small.textContent = it.kind === 'new' ? ' new' : ' clashes with yours';
+    lab.append(cb, document.createTextNode(it.preset.name), small);
+    r.append(lab);
+    let mode: ImportChoice = it.kind === 'new' ? 'add' : 'overwrite';
+    if (it.kind === 'conflict') {
+      const s = seg<ImportChoice>('', 'overwrite', [['overwrite', 'Overwrite'], ['both', 'Keep both']], (v) => { mode = v; if (cb.checked) choices[i] = v; }).querySelector('.seg')!;
+      r.append(s);
+    }
+    cb.onchange = () => { choices[i] = cb.checked ? mode : 'skip'; };
+    items.append(r);
+  });
+  const acts = document.createElement('div'); acts.className = 'dlg-actions';
+  const btn = (text: string, onClick: () => void, go = false) => {
+    const b = document.createElement('button'); b.textContent = text; if (go) b.className = 'go';
+    b.onclick = onClick; return b;
+  };
+  const done = (c: ImportChoice[]) => { dlg.close(); finishImport(plan, c); };
+  const overwrite = btn('Overwrite all', () => done(defaultChoices(plan, 'overwrite')), true);
+  const keep = btn('Keep mine', () => done(defaultChoices(plan, 'skip')));
+  const choose = btn('Choose…', () => {
+    items.hidden = false;
+    acts.replaceChildren(btn('Import selected', () => done(choices), true), cancel);
+  });
+  const cancel = btn('Cancel', () => dlg.close());
+  acts.append(overwrite, keep, choose, cancel);
+  dlg.replaceChildren(h, p, items, acts);
+  dlg.showModal();
 }
 
 // ---------- parameter panel ----------
@@ -845,6 +1079,7 @@ document.querySelectorAll<HTMLButtonElement>('.bg-pick button').forEach((b) => {
   b.onclick = () => {
     stage.dataset.bg = b.dataset.bg!;
     document.querySelectorAll('.bg-pick button').forEach((x) => x.classList.toggle('on', x === b));
+    updateSky();
   };
 });
 
@@ -855,6 +1090,7 @@ new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = window.setTi
 
 loadHash();
 buildPresetCards();
+buildUserPresets();
 buildParams();
 buildOutput();
 await Promise.all(['40px Bungee', 'italic 900 40px Orbitron', '40px VT323', '700 40px Fredoka'].map((f) => document.fonts.load(f))).catch(() => {});

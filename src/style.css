@@ -72,6 +72,21 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .preset small { color: var(--muted); font-size: 11.5px; line-height: 1.3; display: block; }
 .preset.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 
+.up-save { display: flex; gap: 6px; margin-bottom: 8px; }
+.up-save input { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 12.5px; }
+.up-list:empty { display: none; }
+.up-list .preset { position: relative; }
+.up-acts { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 8px 8px !important; }
+.up-acts .chip { font-size: 11px; padding: 2px 8px; }
+.up-empty { color: var(--muted); font-size: 12px; margin: 0 0 4px; }
+.up-items { display: grid; gap: 6px; margin: 10px 0; max-height: 50vh; overflow: auto; }
+.up-items[hidden] { display: none; }
+.up-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.up-item label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.up-item small { color: var(--muted); }
+.up-item .seg { grid-column: auto; }
+#upDlg .go { width: auto; }
+
 .params { display: grid; gap: 9px; }
 .row { display: grid; grid-template-columns: 112px 1fr auto; align-items: center; gap: 8px; }
 .row > span:first-child { color: var(--muted); font-size: 12.5px; }
@@ -94,7 +109,15 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .stage-wrap { padding: 16px 20px 24px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .stage { position: relative; flex: 1; min-height: 300px; border-radius: var(--radius); border: 1px solid var(--line); display: grid; place-items: center; overflow: hidden; }
 .stage { background: #0a0a10; }
-.stage[data-bg=sky] .frame { background: radial-gradient(ellipse at 70% 20%, #ffd9a0 0, transparent 35%), linear-gradient(#3d5a80 0, #98c1d9 52%, #5a6b3a 53%, #2f3b1f 100%); }
+/* Sky preview: an oversized "world" that banks and pitches with the sticks while playing (main.ts updateSky). */
+.sky { position: absolute; inset: 0; overflow: hidden; display: none; }
+.stage[data-bg=sky]:not(.has-video) .sky { display: block; }
+.sky-world {
+  position: absolute; inset: -60%;
+  background: radial-gradient(ellipse 18% 16% at 59% 36%, #ffd9a0 0, transparent 100%), linear-gradient(#3d5a80 20%, #98c1d9 50.9%, #5a6b3a 51.4%, #2f3b1f 75%);
+  transition: transform .6s cubic-bezier(.3, .7, .4, 1);
+}
+.sky-world.flying { transition: none; }
 .stage[data-bg=checker] .frame { background: repeating-conic-gradient(#2a2a35 0 25%, #1e1e27 0 50%) 0 0 / 24px 24px; }
 .stage[data-bg=dark] .frame { background: #000; }
 .stage[data-bg=green] .frame { background: #00b140; }

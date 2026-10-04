@@ -109,7 +109,9 @@ video File ─ openVideo → VideoInfo ─ analyzeFlow → FlowSample[] ─ find
   - Style and layout changes only call `rebuildScene()`, debounced 30 ms.
 - **Timeline with a video:** the top 58 % is the flight lane (drag = shift offset, live), the bottom is the video lane (scrub, trim handles). Without a video it is a single lane.
 - **Playback with a video:** the `<video>` element drives the frame through rAF reading `currentTime`, and loops within the trim. Scrubbing seeks the video.
+- **Sky preview background** (`updateSky` in `main.ts`): a DOM layer under the preview canvas, never exported. While playing (no video, not reduced-motion) it banks with roll (32° at full stick) and shifts with pitch, using the mean stick over the last 0.3 s, a pure function of the frame. Paused, it eases back to level through a CSS transition.
 - **URL hash** holds base64 JSON `{p, o, s:{mode,size,gap,position,chaos,fps,offsetX,offsetY}, z, f}`.
+- **User presets** (`src/presets.ts`): a `Look` is `{presetId, overrides, settings:{mode,size,gap,position,chaos,offsetX,offsetY}}`, i.e. the hash minus fps, size and format (those follow the footage). Stored as a `UserPreset[]` under localStorage `stickcam.presets.v1`. Export file: `{app:'stickcam', kind:'presets', version:1, exported, presets}`. Everything read back (storage or file) goes through `sanitizeLook`: unknown base preset → arcade, override keys/types checked against the built-in `Style`, settings defaulted. Import: `planImport` marks each incoming look new / same / conflict by case-insensitive name; identical looks are skipped silently, and only conflicts open the dialog. The card matching the on-screen look is highlighted (`markUserPresets`, called from `saveHash`).
 
 ## Verified facts (keep in mind)
 
