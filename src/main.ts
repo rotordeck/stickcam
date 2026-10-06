@@ -868,7 +868,7 @@ function buildParams() {
   el.append(sub('Effects'));
   for (const s of STYLE_SLIDERS) el.append(slider(s.label, st[s.key] as number, s.min, s.max, s.step, (v) => setStyle(s.key, v as never)));
   const tg = document.createElement('div'); tg.className = 'toggles';
-  for (const [k, label] of [['popups', 'Trick popups'], ['score', 'Score'], ['thrBar', 'Throttle bar'], ['labels', 'Labels'], ['readout', 'Readout'], ['rainbow', 'Rainbow'], ['intro', 'Arm animation']] as const) {
+  for (const [k, label] of [['popups', 'Popups'], ['stats', 'Stats'], ['thrBar', 'Throttle bar'], ['labels', 'Labels'], ['readout', 'Readout'], ['rainbow', 'Rainbow'], ['intro', 'Arm animation']] as const) {
     const lab = document.createElement('label');
     const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = !!st[k];
     inp.onchange = () => setStyle(k, inp.checked);

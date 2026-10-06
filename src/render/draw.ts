@@ -97,6 +97,27 @@ interface FrameInfo {
   dot: [[number, number], [number, number]]; // device-independent pixel positions of both dots
   live: boolean;
   recent: MotionEvent[]; // events within the last 2.5 s
+  spans: MotionEvent[]; // full-throttle / hang-time spans running now or ended less than SPAN_HOLD ago
+}
+
+/** Seconds a throttle timer stays on screen (frozen) after its span ends. */
+const SPAN_HOLD = 1.5;
+const isSpan = (e: MotionEvent) => e.kind === 'full' || e.kind === 'hang';
+/** Elapsed seconds of a span at frame i, exact from the log's start time, capped at its duration. */
+const spanElapsed = (e: MotionEvent, sc: Scene, i: number) => Math.min(e.dur!, Math.max(0, sc.track.start + i / sc.track.fps - e.t0!));
+/** 6.240 s → "6.240", 75.5 s → "1:15.500". */
+const fmtSecs = (t: number) => {
+  const m = Math.floor(t / 60), sec = t - m * 60;
+  return m ? `${m}:${sec.toFixed(3).padStart(6, '0')}` : sec.toFixed(3);
+};
+/** Clock style for the stats readout: 0:06.240. */
+const fmtClock = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(3).padStart(6, '0')}`;
+/** 0..1 visibility of the newest throttle timer: quick fade in, held, fades out SPAN_HOLD after the span. */
+function timerVisibility(F: FrameInfo): number {
+  const e = F.spans.at(-1);
+  if (!e) return 0;
+  const age = (F.i - e.frame) / F.fps, after = Math.max(0, (F.i - e.end!) / F.fps);
+  return Math.min(clamp01(age / 0.05), 1 - clamp01((after - (SPAN_HOLD - 0.4)) / 0.4));
 }
 
 export function dotPos(sc: Scene, side: 0 | 1, f: number): [number, number] {
@@ -115,7 +136,8 @@ export function renderFrame(ctx: Ctx2D, sc: Scene, i: number, background: string
 
   const ev = motion.events;
   const recent = ev.slice(firstEvent(ev, i - Math.ceil(2.5 * fps)), firstEvent(ev, i + 1));
-  const F: FrameInfo = { i, fps, r, C, s, sc, dot: [dotPos(sc, 0, i), dotPos(sc, 1, i)], live: !!track.live[i], recent };
+  const spans = ev.filter((e) => isSpan(e) && e.frame <= i && i <= e.end! + SPAN_HOLD * fps);
+  const F: FrameInfo = { i, fps, r, C, s, sc, dot: [dotPos(sc, 0, i), dotPos(sc, 1, i)], live: !!track.live[i], recent, spans };
 
   // Arm / disarm animation state.
   let hudAlpha = 1, hudScale = 1;
@@ -135,7 +157,7 @@ export function renderFrame(ctx: Ctx2D, sc: Scene, i: number, background: string
     const R = rng(hash(i, 991, 3));
     for (const e of recent) {
       const age = (i - e.frame) / fps;
-      const amp = e.kind === 'snap' ? 0.6 : e.kind === 'punch' ? 0.8 : e.kind === 'crash' ? 3 : e.label && e.kind !== 'arm' && e.kind !== 'disarm' ? 1.2 : 0;
+      const amp = e.kind === 'snap' ? 0.6 : e.kind === 'punch' || e.kind === 'full' ? 0.8 : e.kind === 'crash' ? 3 : e.kind === 'hang' ? 0 : e.label && e.kind !== 'arm' && e.kind !== 'disarm' ? 1.2 : 0;
       const T = e.kind === 'crash' ? 0.7 : 0.35;
       if (amp && age < T) { const k = amp * (1 - age / T) ** 2; shx += (R() - 0.5) * 2 * k; shy += (R() - 0.5) * 2 * k; }
     }
@@ -210,7 +232,7 @@ export function renderFrame(ctx: Ctx2D, sc: Scene, i: number, background: string
     let g = 0;
     for (const e of recent) {
       const age = (i - e.frame) / fps;
-      const amp = e.kind === 'crash' ? 3 : e.kind === 'snap' ? 0.6 : e.kind === 'punch' ? 0.8 : e.label && e.kind !== 'arm' && e.kind !== 'disarm' ? 1.2 : e.kind === 'arm' ? 1 : 0;
+      const amp = e.kind === 'crash' ? 3 : e.kind === 'snap' ? 0.6 : e.kind === 'punch' || e.kind === 'full' ? 0.8 : e.kind === 'hang' ? 0 : e.label && e.kind !== 'arm' && e.kind !== 'disarm' ? 1.2 : e.kind === 'arm' ? 1 : 0;
       const T = e.kind === 'crash' ? 0.8 : 0.25;
       if (amp && age < T) g += amp * (1 - age / T);
     }
@@ -300,6 +322,17 @@ function drawBase(c: Ctx2D, F: FrameInfo) {
       c.stroke();
       c.shadowBlur = 0;
     }
+  }
+  const full = s.popups && s.frame !== 'none' ? F.spans.find((e) => e.kind === 'full' && i <= e.end!) : undefined;
+  if (full) {
+    const g = sc.settings.mode === 2 ? L.left : L.right;
+    const pulse = 0.55 + 0.45 * Math.sin(((i - full.frame) / F.fps) * Math.PI * 6);
+    const hot = s.hot ?? s.dot;
+    gimbalPath(c, s, g.x, g.y, r * 1.06);
+    c.strokeStyle = css(parseColor(hot), 0.5 + 0.5 * pulse); c.lineWidth = lw(s.ringW * 1.6);
+    c.shadowColor = hot; c.shadowBlur = r * (0.25 + 0.35 * pulse) * sc.scale;
+    c.stroke();
+    c.shadowBlur = 0;
   }
   if (s.thrBar) {
     const thrLeft = sc.settings.mode === 2;
@@ -568,7 +601,8 @@ function drawFlame(c: Ctx2D, F: FrameInfo) {
   for (let f = Math.max(1, i - look); f <= i; f++) {
     if (!tr.live[f]) continue;
     const th = tr.throttle[f];
-    const boost = punches.some((e) => f >= e.frame && f - e.frame < 0.6 * fps) ? 2.5 : 1;
+    const boost = punches.some((e) => f >= e.frame && f - e.frame < 0.6 * fps) ? 2.5
+      : F.spans.some((e) => e.kind === 'full' && f >= e.frame && f <= e.end!) ? 1.8 : 1;
     const R = rng(hash(f, 501, side));
     const count = Math.min(40, Math.floor(s.flame * C * th ** 1.5 * 9 * perFrame * boost + R()));
     const [x0, y0] = dotPos(sc, side, f);
@@ -619,13 +653,16 @@ function drawText(c: Ctx2D, F: FrameInfo) {
   c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
 
   if (s.popups) {
-    const pops = F.recent.filter((e) => e.label && (e.kind !== 'arm' || s.intro) && (e.kind !== 'disarm' || s.intro));
-    const shown = pops.filter((e) => (i - e.frame) / fps < (e.kind === 'crash' ? 2.5 : 1.3)).slice(-2);
+    drawTimers(c, F);
+    const timerUp = F.spans.length > 0 ? r * 0.55 : 0; // just clears the timer label; tight crop has ~2.3 r of headroom
+    const pops = F.recent.filter((e) => e.label && !isSpan(e) && (e.kind !== 'arm' || s.intro) && (e.kind !== 'disarm' || s.intro));
+    // With a timer up there's room for one popup above it, not two.
+    const shown = pops.filter((e) => (i - e.frame) / fps < (e.kind === 'crash' ? 2.5 : 1.3)).slice(timerUp ? -1 : -2);
     shown.forEach((e, idx) => {
       const age = (i - e.frame) / fps, T = e.kind === 'crash' ? 2.5 : 1.3;
       const label = s.labelMap[e.label!] ?? e.label!;
       const alpha = 1 - clamp01((age - (T - 0.35)) / 0.35);
-      const lift = idx < shown.length - 1 ? r * 0.75 : 0;
+      const lift = (idx < shown.length - 1 ? r * 0.75 : 0) + timerUp;
       const crash = e.kind === 'crash';
       if (s.popupStyle === 'terminal') {
         // Typed out at ~40 chars/s with a blinking block cursor, left-aligned like a console.
@@ -643,7 +680,7 @@ function drawText(c: Ctx2D, F: FrameInfo) {
         c.fillStyle = col; c.fillText(shownText + cursor, L.hud.x, y);
         if ((e.combo ?? 1) >= 2 && age > line.length / 40) {
           c.font = font(size * 0.6);
-          c.fillText(`  COMBO x${e.combo} :: +${e.points} PTS`, L.hud.x, y + size * 0.7);
+          c.fillText(`  COMBO x${e.combo}`, L.hud.x, y + size * 0.7);
         }
         c.restore();
         return;
@@ -677,24 +714,90 @@ function drawText(c: Ctx2D, F: FrameInfo) {
     });
   }
 
-  if (s.score) {
-    const sm = sc.motion.score;
-    let disp = 0; const W = Math.round(0.3 * fps);
-    for (let j = 0; j < W; j++) disp += sm[Math.max(0, i - j)];
-    disp = Math.round(disp / W);
-    const x = L.right.x + r, y = L.hud.y - r * 0.12;
-    c.textAlign = 'right'; c.textBaseline = 'bottom';
-    c.font = font(r * 0.17); c.fillStyle = css(parseColor(s.textColor), 0.85); c.fillText('SCORE', x, y - r * 0.32);
-    c.font = font(r * 0.32); c.lineWidth = r * 0.05; c.strokeStyle = s.textStroke;
-    const txt = String(disp).padStart(6, '0');
-    c.strokeText(txt, x, y); c.fillStyle = s.textColor; c.fillText(txt, x, y);
+  // Popups and timers take over the spot above the gimbals; the stats step aside at once and fade back after.
+  let busy = s.popups ? timerVisibility(F) : 0;
+  if (s.popups) {
     for (const e of F.recent) {
-      const age = (i - e.frame) / fps;
-      if (!e.points || e.points < 25 || age > 0.9) continue;
-      c.globalAlpha = 1 - age / 0.9;
-      c.font = font(r * 0.2); c.fillStyle = s.hot ?? '#fff';
-      c.fillText(`+${e.points}`, x - r * 0.95 - age * r * 0.3, y - r * 0.32);
-      c.globalAlpha = 1;
+      if (!e.label || isSpan(e) || ((e.kind === 'arm' || e.kind === 'disarm') && !s.intro)) continue;
+      const age = (i - e.frame) / fps, T = e.kind === 'crash' ? 2.5 : 1.3;
+      busy = Math.max(busy, Math.min(clamp01(age / 0.05), 1 - clamp01((age - T) / 0.2)));
     }
   }
+  const statsAlpha = 1 - busy;
+  if (s.stats && statsAlpha > 0.01) {
+    // OSD-style readout of real numbers only; a line appears once it has something to say.
+    const st = sc.motion.stats;
+    c.save();
+    c.globalAlpha = statsAlpha;
+    const rows: [string, number][] = [['ARMED', st.armedTime[i]], ['HANG MAX', st.hangBest[i]], ['FULL THR', st.fullTotal[i]]];
+    const x = L.right.x + r, y = L.hud.y - r * 0.12;
+    c.textAlign = 'right'; c.textBaseline = 'bottom';
+    c.lineWidth = r * 0.04; c.strokeStyle = s.textStroke;
+    let row = 0;
+    for (const [name, v] of rows) {
+      if (v <= 0) continue;
+      const yy = y - row * r * 0.3;
+      const txt = fmtClock(v);
+      c.font = font(r * 0.24);
+      const vw = c.measureText(txt).width;
+      c.font = font(r * 0.16); c.fillStyle = css(parseColor(s.textColor), 0.75);
+      c.fillText(name, x - vw - r * 0.1, yy);
+      c.font = font(r * 0.24);
+      c.strokeText(txt, x, yy); c.fillStyle = s.textColor; c.fillText(txt, x, yy);
+      row++;
+    }
+    c.restore();
+  }
+}
+
+/** Live throttle timers: counts up with milliseconds while the span lasts, then freezes, pops and fades. */
+function drawTimers(c: Ctx2D, F: FrameInfo) {
+  const { s, r, sc, i, fps } = F;
+  const L = sc.layout, k = sc.scale;
+  const font = (px: number) => s.font.replace('{px}', px.toFixed(1));
+  const cx = L.hud.x + L.hud.w / 2;
+  // Newest span wins the slot; overlapping spans can't happen (throttle can't be full and zero at once).
+  const e = F.spans.at(-1);
+  if (!e) return;
+  const t = spanElapsed(e, sc, i);
+  const after = Math.max(0, (i - e.end!) / fps); // seconds since the span ended (0 while running)
+  const done = i > e.end!;
+  const alpha = 1 - clamp01((after - (SPAN_HOLD - 0.4)) / 0.4);  const label = s.labelMap[e.label!] ?? e.label!;
+  const full = e.kind === 'full';
+  const num = `${fmtSecs(t)}s`;
+  c.save();
+  c.globalAlpha = alpha;
+  if (s.popupStyle === 'terminal') {
+    const size = 0.42 * r;
+    const age = (i - e.frame) / fps;
+    const head = `> ${label.replace(/ /g, '_')}`;
+    const typed = head.slice(0, Math.min(head.length, Math.floor(age * 40) + 1));
+    const line = typed.length < head.length ? typed + '█' : `${head} ${num}${done ? '' : Math.floor(age * 4) % 2 === 0 ? '█' : ' '}`;
+    const col = full ? (s.hot ?? s.textColor) : s.textColor;
+    c.font = font(size); c.textAlign = 'left'; c.textBaseline = 'middle';
+    c.shadowColor = col; c.shadowBlur = size * 0.45 * k;
+    c.fillStyle = col; c.fillText(line, L.hud.x, L.hud.y - r * 0.6);
+    c.restore();
+    return;
+  }
+  const col = s.rainbow ? hsl(hueAt(i, fps), 1, 72) : full ? (s.hot ?? s.textColor) : '#bff4ff';
+  const pulse = full && !done ? 0.5 + 0.5 * Math.sin(t * Math.PI * 6) : 0;
+  // A bounce when it starts, and again when the final time locks in.
+  const age = (i - e.frame) / fps;
+  const pop = age < 0.14 ? easeOutBack(age / 0.14) : done && after < 0.25 ? 1 + 0.18 * Math.sin((after / 0.25) * Math.PI) : 1;
+  const drift = full ? 0 : -Math.min(age, 3) * r * 0.06; // hang time floats up gently
+  c.translate(cx, L.hud.y - r * 0.55 + drift); c.scale(pop, pop);
+  c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round';
+  // label
+  const ls = r * 0.3;
+  c.font = font(ls);
+  c.lineWidth = ls * 0.16; c.strokeStyle = s.textStroke; c.strokeText(label, 0, -r * 0.42);
+  c.fillStyle = col; c.fillText(label, 0, -r * 0.42);
+  // counter
+  const ns = r * (done ? 0.56 : 0.5);
+  c.font = font(ns);
+  c.lineWidth = ns * 0.16; c.strokeText(num, 0, 0);
+  c.shadowColor = col; c.shadowBlur = ns * (0.35 + 0.5 * pulse) * k;
+  c.fillStyle = done ? s.textColor : col; c.fillText(num, 0, 0);
+  c.restore();
 }

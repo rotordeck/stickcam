@@ -1,9 +1,10 @@
 // Derived motion features and "game" events for the effect layers. Computed once per (flight, trim, fps).
-// Tricks come from the full-rate gyro (not the resampled track) so fast rolls are counted exactly.
+// Everything is measured, nothing is guessed: tricks come from the full-rate gyro (a real ≥ 330° rotation),
+// throttle spans from the full-rate throttle so their timers are exact to the millisecond.
 import { indexAtTime } from './decoder/units.js';
-import type { FlightData, Track } from './track.ts';
+import { throttleRange, type FlightData, type Track } from './track.ts';
 
-export type EventKind = 'snap' | 'flip' | 'roll' | 'spin' | 'punch' | 'arm' | 'disarm' | 'crash';
+export type EventKind = 'snap' | 'flip' | 'roll' | 'spin' | 'punch' | 'arm' | 'disarm' | 'crash' | 'full' | 'hang';
 
 export interface MotionEvent {
   frame: number;
@@ -19,7 +20,18 @@ export interface MotionEvent {
   /** Trick chain position (1 = first trick of a combo). */
   combo?: number;
   label?: string;
-  points?: number;
+  /** Throttle spans (full / hang): last frame of the span, and exact start time and duration (s) from the log. */
+  end?: number; t0?: number; dur?: number;
+}
+
+/** Cumulative real numbers per frame for the stats readout. */
+export interface MotionStats {
+  /** Seconds at full throttle so far. */
+  fullTotal: Float32Array;
+  /** Longest hang time so far (s). */
+  hangBest: Float32Array;
+  /** Seconds since arm (0 before arm). */
+  armedTime: Float32Array;
 }
 
 export interface Motion {
@@ -28,8 +40,7 @@ export interface Motion {
   /** Dot speed per frame (full-scale units per second, lightly smoothed). */
   speedL: Float32Array; speedR: Float32Array;
   events: MotionEvent[];
-  /** Score after each frame (tricks × combo multiplier + snaps). */
-  score: Float32Array;
+  stats: MotionStats;
 }
 
 export interface MotionOptions { mode: 1 | 2; snapSpeed?: number }
@@ -48,6 +59,27 @@ const ROT_HOLD = 140; // deg/s: run continues while above this
 const ROT_GAP = 0.2; // s below ROT_HOLD that ends a run
 const COMBO_WINDOW = 1.6; // s between tricks to chain a combo
 
+const FULL_THR = 0.98; // throttle fraction that counts as full (sticks rarely reach exactly 2000)
+const FULL_MIN = 0.3; // s: shortest full-throttle span that gets a timer
+const ZERO_THR = 0.02; // throttle fraction that counts as zero
+const HANG_MIN = 0.5; // s: shortest zero-throttle span that counts as hang time
+const SPAN_JOIN = 0.06; // s: dips shorter than this don't break a span (radio jitter)
+const HANG_FLYING = 0.2; // throttle needed before and after a hang (else it's idling on the ground)
+const HANG_CONTEXT = 1.5; // s: window before/after a hang to look for that throttle
+
+/** Spans [t0, t1] (s) where `inside(i)` holds on the full-rate samples, joining gaps up to SPAN_JOIN. */
+function spans(t: Float64Array | Float32Array, a: number, b: number, inside: (i: number) => boolean): [number, number][] {
+  const out: [number, number][] = [];
+  let s0 = -1, last = -1;
+  for (let i = a; i < b; i++) {
+    if (!inside(i)) continue;
+    if (s0 >= 0 && t[i] - t[last] <= SPAN_JOIN) { last = i; continue; }
+    if (s0 >= 0) out.push([t[s0], t[last]]);
+    s0 = i; last = i;
+  }
+  if (s0 >= 0) out.push([t[s0], t[last]]);
+  return out;
+}
 const NAMES = ['', '', 'DOUBLE ', 'TRIPLE ', 'QUAD '];
 const trickName = (kind: EventKind, turns: number) => {
   const base = kind === 'flip' ? 'FLIP' : kind === 'roll' ? 'ROLL' : '360';
@@ -82,7 +114,7 @@ export function analyzeMotion(data: FlightData, tr: Track, opts: MotionOptions):
     for (let i = 1; i < n; i++) {
       if (!tr.live[i]) continue;
       const r = useY ? Math.max(Math.abs(x[i]), Math.abs(y[i])) : Math.abs(x[i]);
-      if (armed && r > 0.95 && s[i] > snapSpeed) { events.push({ frame: i, kind: 'snap', side, x: x[i], y: y[i], points: 10 }); armed = false; }
+      if (armed && r > 0.95 && s[i] > snapSpeed) { events.push({ frame: i, kind: 'snap', side, x: x[i], y: y[i], }); armed = false; }
       else if (r < 0.8) armed = true;
     }
   });
@@ -98,7 +130,7 @@ export function analyzeMotion(data: FlightData, tr: Track, opts: MotionOptions):
         let lo = 1;
         for (let k = i - look; k < i; k++) if (tr.live[k] && tr.throttle[k] < lo) lo = tr.throttle[k];
         if (lo < 0.35 && th - lo > 0.45) {
-          events.push({ frame: i, kind: 'punch', side: thSide, x: thSide ? rx[i] : lx[i], y: thSide ? ry[i] : ly[i], label: 'PUNCH IT', points: 25 });
+          events.push({ frame: i, kind: 'punch', side: thSide, x: thSide ? rx[i] : lx[i], y: thSide ? ry[i] : ly[i], label: 'PUNCH IT' });
           armed = false;
         }
       } else if (th < 0.3) armed = true;
@@ -133,7 +165,7 @@ export function analyzeMotion(data: FlightData, tr: Track, opts: MotionOptions):
       const turns = Math.floor((Math.abs(run) + 30) / 360);
       if (turns > counted) {
         counted = turns;
-        tricks.push({ frame: toFrame(sig.t[i]), kind, turns, dir: Math.sign(run), points: 100 * turns });
+        tricks.push({ frame: toFrame(sig.t[i]), kind, turns, dir: Math.sign(run) });
       }
     }
   });
@@ -151,7 +183,6 @@ export function analyzeMotion(data: FlightData, tr: Track, opts: MotionOptions):
     lastTrick = e.frame;
     e.combo = combo;
     e.label = trickName(e.kind, e.turns!);
-    e.points = e.points! * combo;
   }
   events.push(...merged);
 
@@ -171,12 +202,40 @@ export function analyzeMotion(data: FlightData, tr: Track, opts: MotionOptions):
       : { frame: toFrame(disarmT), kind: 'disarm', label: 'DISARMED' });
   }
 
-  events.sort((a, b) => a.frame - b.frame);
-  const score = new Float32Array(n);
-  let k = 0, total = 0;
-  for (let i = 0; i < n; i++) {
-    while (k < events.length && events[k].frame <= i) total += events[k++].points ?? 0;
-    score[i] = total;
+  // Full throttle and hang time, measured on the full-rate throttle so the timers are exact.
+  const spanEvents: MotionEvent[] = [];
+  const thr = sig.throttle;
+  if (thr) {
+    const [tLo, tHi] = throttleRange(data.flight.header.raw);
+    const frac = (i: number) => (thr[i] - tLo) / (tHi - tLo);
+    const a = Math.max(0, indexAtTime(sig.t, t0)), b = Math.min(sig.n, indexAtTime(sig.t, t1));
+    const ev = (kind: 'full' | 'hang', label: string, [s0, s1]: [number, number]): MotionEvent =>
+      ({ frame: toFrame(s0), end: toFrame(s1), kind, label, t0: s0, dur: s1 - s0 });
+    for (const sp of spans(sig.t, a, b, (i) => frac(i) >= FULL_THR)) if (sp[1] - sp[0] >= FULL_MIN) spanEvents.push(ev('full', 'FULL SEND', sp));
+    // Hang time: armed, throttle at zero, and flying on both sides of it (not idling before take-off or after landing).
+    const flying = (from: number, to: number) => {
+      for (let i = Math.max(0, indexAtTime(sig.t, from)); i < sig.n && sig.t[i] <= to; i++) if (frac(i) > HANG_FLYING) return true;
+      return false;
+    };
+    for (const sp of spans(sig.t, a, b, (i) => frac(i) <= ZERO_THR)) {
+      if (sp[1] - sp[0] < HANG_MIN || sp[0] < armT || sp[1] > disarmT) continue;
+      if (flying(sp[0] - HANG_CONTEXT, sp[0]) && flying(sp[1], sp[1] + HANG_CONTEXT)) spanEvents.push(ev('hang', 'HANG TIME', sp));
+    }
   }
-  return { lx, ly, rx, ry, speedL, speedR, events, score };
+  events.push(...spanEvents);
+  events.sort((a, b) => a.frame - b.frame);
+
+  const stats: MotionStats = { fullTotal: new Float32Array(n), hangBest: new Float32Array(n), armedTime: new Float32Array(n) };
+  for (let i = 0; i < n; i++) {
+    const t = t0 + i / fps;
+    let full = 0, hang = 0;
+    for (const e of spanEvents) {
+      const el = Math.min(e.dur!, Math.max(0, t - e.t0!));
+      if (e.kind === 'full') full += el; else hang = Math.max(hang, el);
+    }
+    stats.fullTotal[i] = full;
+    stats.hangBest[i] = hang;
+    stats.armedTime[i] = t >= armT && t <= disarmT ? t - armT : t > disarmT ? disarmT - armT : 0;
+  }
+  return { lx, ly, rx, ry, speedL, speedR, events, stats };
 }

@@ -13,7 +13,7 @@ export interface Style {
   sparks: number; sparkColors: string[]; // spark emission multiplier (0 = off)
   shock: number; // shockwave strength 0..1
   shake: number; // screen-shake amplitude (r units)
-  popups: boolean; score: boolean;
+  popups: boolean; stats: boolean; // stats = live full-throttle / hang time / armed timers
   font: string; textColor: string; textStroke: string;
   flame: number; // throttle afterburner
   embers: number; // rising embers with throttle
@@ -37,7 +37,7 @@ const BASE: Style = {
   dot: '#ff5252', dotR: 0.14, dotRing: 'rgba(255,255,255,0.86)', hot: null,
   glow: 0, bloom: 0, trail: 0, trailW: 0.12,
   sparks: 0, sparkColors: ['#ffffff', '#fff2a8', '#ffb347', '#ff5e3a'],
-  shock: 0, shake: 0, popups: false, score: false,
+  shock: 0, shake: 0, popups: false, stats: false,
   font: "{px}px Bungee, Impact, 'Arial Black', sans-serif", textColor: '#ffffff', textStroke: 'rgba(0,0,0,0.6)',
   flame: 0, embers: 0, scan: 0, chroma: 0, thrBar: false, labels: false, intro: false,
   dotShape: 'circle', rainbow: false, sparkShape: 'streak', readout: false, popupStyle: 'pop', glitch: 0, labelMap: {},
@@ -57,11 +57,11 @@ export const PRESETS: Preset[] = [
     },
   },
   {
-    id: 'arcade', name: 'Arcade', blurb: 'Sparks, shockwaves, combos and a score. Go nuts.',
+    id: 'arcade', name: 'Arcade', blurb: 'Sparks, shockwaves, combos and live throttle stats. Go nuts.',
     style: {
       ...BASE, plate: 'rgba(10,0,30,0.4)', ring: '#ffe14d', ringW: 0.05, cross: 'rgba(255,225,77,0.25)', grid: 0,
       dot: '#ffe14d', dotR: 0.13, dotRing: '#ffffff', hot: '#ff3b3b', glow: 0.3, bloom: 0.9, trail: 0.3, trailW: 0.12,
-      sparks: 1, shock: 1, shake: 0.12, popups: true, score: true, flame: 0.5, thrBar: true, intro: true,
+      sparks: 1, shock: 1, shake: 0.12, popups: true, stats: true, flame: 0.5, thrBar: true, intro: true,
       textColor: '#ffe14d', textStroke: '#b0006a',
     },
   },
@@ -92,7 +92,7 @@ export const PRESETS: Preset[] = [
       rainbow: true, sparks: 1.3, sparkShape: 'star', sparkColors: ['#ffffff', '#fff3b0', '#ffc6ff', '#a0e7ff'],
       shock: 0.8, shake: 0.03, popups: true, embers: 0.7, intro: true,
       font: "700 {px}px Fredoka, 'Comic Sans MS', sans-serif", textColor: '#ffffff', textStroke: '#ff5fbf',
-      labelMap: { WASTED: 'OOPSIE!', 'PUNCH IT': 'SPARKLE BOOST', ARMED: 'MAGIC ON', DISARMED: 'NAP TIME' },
+      labelMap: { WASTED: 'OOPSIE!', 'PUNCH IT': 'SPARKLE BOOST', ARMED: 'MAGIC ON', DISARMED: 'NAP TIME', 'FULL SEND': 'ZOOMIES!', 'HANG TIME': 'FLOATY TIME' },
     },
   },
   {
@@ -101,10 +101,10 @@ export const PRESETS: Preset[] = [
       ...BASE, frame: 'brackets', plate: 'rgba(0,18,4,0.6)', ring: '#33ff66', ringW: 0.04, cross: 'rgba(51,255,102,0.3)', grid: 4,
       dot: '#33ff66', dotR: 0.1, dotRing: null, dotShape: 'square', hot: '#e0ffe6', glow: 0.5, bloom: 0.6, trail: 0.5, trailW: 0.07,
       sparks: 1, sparkShape: 'glyph', sparkColors: ['#f0fff2', '#7dff9a', '#2bd94f', '#0d7a26'],
-      shock: 0.45, shake: 0.05, popups: true, popupStyle: 'terminal', score: true, thrBar: true, readout: true, intro: true,
+      shock: 0.45, shake: 0.05, popups: true, popupStyle: 'terminal', stats: true, thrBar: true, readout: true, intro: true,
       scan: 0.6, chroma: 0.02, glitch: 1,
       font: "{px}px VT323, 'Courier New', monospace", textColor: '#33ff66', textStroke: 'rgba(0,0,0,0.85)',
-      labelMap: { WASTED: 'FATAL ERROR: CRASH', 'PUNCH IT': 'OVERCLOCK', ARMED: 'ACCESS GRANTED', DISARMED: 'CONNECTION CLOSED' },
+      labelMap: { WASTED: 'FATAL ERROR: CRASH', 'PUNCH IT': 'OVERCLOCK', ARMED: 'ACCESS GRANTED', DISARMED: 'CONNECTION CLOSED', 'FULL SEND': 'MAX_POWER', 'HANG TIME': 'NULL_THRUST' },
     },
   },
 ];

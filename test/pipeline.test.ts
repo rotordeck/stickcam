@@ -22,6 +22,11 @@ describe('decoder + track', () => {
     for (const a of [tr.roll, tr.pitch, tr.yaw]) for (const v of a) expect(Math.abs(v)).toBeLessThanOrEqual(1);
     for (const v of tr.throttle) expect(v >= 0 && v <= 1).toBe(true);
   });
+  it.each(samples)('gentle sample $file invents no throttle timers or tricks', ({ file }) => {
+    const [d] = load(`public/samples/${file}`);
+    const m = analyzeMotion(d, buildTrack(d, 30, 0, d.sig.duration), { mode: 2 });
+    expect(m.events.filter((e) => ['full', 'hang', 'flip', 'roll', 'spin'].includes(e.kind))).toEqual([]);
+  });
 
   const full = '../fpvstream/flightdata/20261001/blackbox_20261001_105759.bbl';
   it.skipIf(!existsSync(full))('full 2026-10-01 log has three flights', () => {
@@ -55,7 +60,7 @@ describe('motion events on the freestyle demo', () => {
   const labels = m.events.filter((e) => e.label).map((e) => e.label);
 
   it('detects the scripted tricks in order', () => {
-    expect(labels).toEqual(['PUNCH IT', 'ROLL', 'FLIP', 'DOUBLE ROLL', '360 SPIN', 'FLIP', 'TRIPLE FLIP', 'PUNCH IT', 'ROLL', 'WASTED']);
+    expect(labels).toEqual(['PUNCH IT', 'FULL SEND', 'ROLL', 'FLIP', 'DOUBLE ROLL', '360 SPIN', 'FLIP', 'TRIPLE FLIP', 'HANG TIME', 'PUNCH IT', 'FULL SEND', 'ROLL', 'WASTED']);
   });
 
   it('chains roll → flip → double roll into a 3-trick combo', () => {
@@ -67,9 +72,30 @@ describe('motion events on the freestyle demo', () => {
     for (const e of m.events.filter((x) => x.kind === 'snap')) expect(e.side === 1 || Math.abs(e.x!) > 0.9).toBe(true);
   });
 
-  it('score only goes up and ends at the sum of event points', () => {
-    for (let i = 1; i < m.score.length; i++) expect(m.score[i]).toBeGreaterThanOrEqual(m.score[i - 1]);
-    expect(m.score[m.score.length - 1]).toBe(m.events.reduce((a, e) => a + (e.points ?? 0), 0));
+  it('times full throttle and hang time from the log, to the millisecond', () => {
+    const full = m.events.filter((e) => e.kind === 'full'), hang = m.events.filter((e) => e.kind === 'hang');
+    // Script: throttle eases to 100 % by 1.7 s and leaves it after 2.9 s; zero from 15.72 to 16.45 s.
+    expect(full[0].dur!).toBeGreaterThan(1.15); expect(full[0].dur!).toBeLessThan(1.3);
+    expect(full[0].t0!).toBeGreaterThan(1.6); expect(full[0].t0!).toBeLessThan(1.71);
+    expect(hang).toHaveLength(1);
+    expect(hang[0].dur!).toBeGreaterThan(0.7); expect(hang[0].dur!).toBeLessThan(0.8);
+  });
+
+  it('take-off idle and the post-crash idle are not hang time', () => {
+    for (const e of m.events.filter((x) => x.kind === 'hang')) expect(e.t0! > 1 && e.t0! < 19).toBe(true);
+  });
+
+  it('stats only go up and end at the real totals', () => {
+    const { fullTotal, hangBest, armedTime } = m.stats;
+    for (let i = 1; i < fullTotal.length; i++) {
+      expect(fullTotal[i]).toBeGreaterThanOrEqual(fullTotal[i - 1]);
+      expect(hangBest[i]).toBeGreaterThanOrEqual(hangBest[i - 1]);
+      expect(armedTime[i]).toBeGreaterThanOrEqual(armedTime[i - 1]);
+    }
+    const sum = m.events.filter((e) => e.kind === 'full').reduce((a, e) => a + e.dur!, 0);
+    expect(fullTotal.at(-1)!).toBeCloseTo(sum, 4);
+    expect(hangBest.at(-1)!).toBeCloseTo(m.events.find((e) => e.kind === 'hang')!.dur!, 4);
+    expect(armedTime.at(-1)!).toBeCloseTo(d.armed[1] - d.armed[0], 3);
   });
 
   it('mode 1 swaps throttle and pitch between the gimbals', () => {

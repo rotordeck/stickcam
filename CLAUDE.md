@@ -11,7 +11,7 @@ Owner: Hans (HansF). Started 2026-10-03 as a spin-off of `~/Projects/fpvstream`,
 ```sh
 npm install
 npm run dev        # Vite dev server (the author uses --port 5199); opens on the Freestyle demo
-npm test           # vitest: decoder, track, motion events, layout, flow/sync, fps snapping, FC, logging settings, user presets (32 tests)
+npm test           # vitest: decoder, track, motion events, layout, flow/sync, fps snapping, FC, logging settings, user presets (39 tests)
 npm run build      # tsc --noEmit + vite build → dist/ (≈2 MB incl. samples). BASE=/sub/ for sub-path hosting
 npx tsc --noEmit   # typecheck only
 node scripts/make-samples.ts   # re-cut public/samples/*.bbl from the real logs (needs ../fpvstream + ../betamcp)
@@ -28,14 +28,14 @@ Node 26 runs the `.ts` modules directly (type stripping). For that reason:
 |---|---|
 | `src/decoder/bbl.js`, `units.js` | **Unchanged copies** of fpvstream `viewer/src` @ `8eb4661`, plus hand-written `.d.ts`. Fix decoder bugs upstream first, then re-copy. |
 | `src/track.ts` | Resamples a flight to the output fps. Sticks: roll/pitch/yaw = rcCommand/500 (±1), throttle 0..1. `live=0` in log gaps. Armed span comes from S-frame flags. Port of Android `StickTrack.kt`. |
-| `src/motion.ts` | Stick speeds and **events**: snap, punch, flip/roll/spin (integrated full-rate gyro), combo, crash ("WASTED"), arm/disarm, score. Pure. |
+| `src/motion.ts` | Stick speeds and **events**: snap, punch, flip/roll/spin (integrated full-rate gyro), combo, crash ("WASTED"), arm/disarm, **full throttle** ("FULL SEND") and **hang time** spans timed to the ms from the full-rate throttle, and cumulative `stats` (full-throttle total, longest hang, armed time). No score: every number on screen is measured. Pure. |
 | `src/render/draw.ts` | `renderFrame(ctx, scene, i)` is **a pure function of the frame index**. Layers: base → additive fx canvas → chroma/bloom → crisp dots/text → glitch → scanlines. |
 | `src/render/style.ts` | The `Style` type and **8 presets**: clean, minimal, neon, arcade, synthwave, inferno, unicorn, hacker. |
 | `src/render/layout.ts` | Output sizes, gimbal placement (17 % of the short side, as in `StickHud.kt`), tight crop, X/Y nudge. |
 | `src/export/export.ts` | `webm` (VP9 + alpha), `mp4` (H.264 on a key colour), `prores` (ffmpeg.wasm), `burn` (cut video + overlay + audio). |
 | `src/sync.ts` | `FlowEstimator`: FFT phase correlation on 128×64 frames gives pan x/y per frame. `findOffset` cross-correlates it with the gyro. Pure. |
 | `src/video.ts` | Opens the video with Mediabunny (size, fps snapping, duration) and runs the motion pass through a `CanvasSink`. |
-| `src/fc/fc.ts`, `huffman.ts` | **Read the log off the whoop**: WebSerial + minimal MSP v1 client (jumbo frames), `MSP_DATAFLASH_SUMMARY`/`READ` loop with Huffman decompression, 4096-byte blocks, retry on CRC/timeout. Ported from betaflight-configurator (`MSPHelper.dataflashRead`, `useDataflashPull.js`); the tree is a verbatim copy. Flash only: SD-card logs can't be read over MSP. Also the blackbox config calls (`apiMinor`, `getBlackboxConfig`, `setBlackboxConfig` = set → EEPROM write → read-back, `eraseFlash`). |
+| `src/fc/fc.ts`, `huffman.ts` | **Read the log off the whoop**: WebSerial + minimal MSP v1 client (jumbo frames), `MSP_DATAFLASH_SUMMARY`/`READ` loop with Huffman decompression, 4096-byte blocks, retry on CRC/timeout. Ported from betaflight-configurator (`MSPHelper.dataflashRead`, `useDataflashPull.js`); the tree is a verbatim copy. Flash only: SD-card logs can't be read over MSP. Also the blackbox config calls (`apiMinor`, `getBlackboxConfig`, `setBlackboxConfig` = set → EEPROM write → read-back, `eraseFlash`). Erase: some flash chips make the FC stop answering MSP while erasing, so `eraseFlash` waits up to 60 s for the MSP 72 reply and treats poll timeouts as busy until a 180 s deadline, as the configurator does (a 5 s timeout failed on real hardware). |
 | `src/fc/blackbox.ts`, `dialog.ts` | **Logging settings** (pure): field table with the disabled-mask bit order per API version, config codec (MSP 80/81), profiles (StickCam = RC+gyro @1/16, Balanced @1/8, Betaflight default), size estimate, diff text, CLI commands. `dialog.ts` is the "Logging settings…" dialog (own serial connection while open; previous settings kept in localStorage for "Restore previous"; erase only after a full download this session, double-click confirm). |
 | `src/presets.ts` | **User presets (saved looks)**, pure: a look = base `presetId` + Tweak `overrides` + gimbal settings (mode, size, gap, position, chaos, offsets); output size/fps/format are deliberately left out. localStorage key `stickcam.presets.v1`, JSON file `{app:'stickcam', kind:'presets', version:1, presets}`, sanitizing, import plan (new / identical / name clash, case-insensitive) and apply (skip / add / overwrite / keep both → "Name (2)"). UI in `main.ts` (section "4 · Presets", dialog `#upDlg`). |
 | `src/demo.ts` | Synthetic freestyle flight, scripted so every effect fires (tests rely on its event list). |
@@ -73,6 +73,7 @@ Done and verified in Chrome and with ffprobe:
 - "Read from flight controller" button (Chrome/Edge/Opera only): downloads the onboard flash over USB, loads it, and offers "Save .bbl". **Only tested against a fake FC, not real hardware yet.** "Logging settings…" dialog writes the blackbox field mask and rate (StickCam needs only RC + filtered gyro; everything else wastes the 16 MB flash). The mask bit order comes from betaflight-configurator and is verified by read-back only: check once with `diff` in the CLI on a real board.
 - Log loading (multi-flight, legacy-dump repair), demo, 3 real sample clips.
 - 8 presets with live thumbnails. The Tweak panel covers chaos, colours, every effect, frame shape, particle shape, mode 1/2, size, spacing, position and X/Y nudge. Settings are kept in the URL hash.
+- Grounded effects: the made-up score is gone. Live timers with milliseconds for full throttle (≥ 98 %, ≥ 0.3 s) and hang time (armed, zero throttle ≥ 0.5 s mid-flight), a pulsing hot throttle ring and harder flame at full throttle, and a "Stats" readout (FULL THR / HANG MAX / ARMED) that steps aside while a popup or timer is up. The demo has two full-throttle spans and one hang.
 - Sky preview background flies with the sticks while playing (horizon banks and pitches; preview only).
 - Presets section: save the current look under a name (kept in localStorage, live thumbnails, click to apply, Update/Rename/Delete), export all to a JSON file, import with a clash dialog (Overwrite all / Keep mine / Choose per look with Overwrite or Keep both).
 - Timeline with activity, throttle and event markers, trim handles, scrub, playback, keyboard (space, ←/→, shift = 10 frames).

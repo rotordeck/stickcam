@@ -40,9 +40,13 @@ video File ─ openVideo → VideoInfo ─ analyzeFlow → FlowSample[] ─ find
   - A run starts above 280 °/s (spin: ×1.4) and continues while above 140 °/s. It ends after 0.2 s of quiet or a sign flip.
   - A turn counts at 330°.
   - Events of the same kind less than 0.7 s × turns apart merge, so a double flip emits once with `turns=2`.
-- **Combo:** tricks less than 1.6 s apart chain. Points = 100 × turns × combo.
+- **Combo:** tricks less than 1.6 s apart chain (shown as COMBO ×n; there are no points).
 - **Crash:** an acceleration spike above 6 g in the 1.5 s before disarm. The card lands on the impact; otherwise a plain DISARMED.
-- `score[i]` is cumulative. The renderer shows a 0.3 s moving average, so it counts up.
+- **Full throttle / hang time:** spans on the full-rate throttle (normalised with `throttleRange`), so `t0` and `dur` are exact seconds, not frame-quantised. Dips ≤ 60 ms don't split a span.
+  - Full: ≥ 98 % for ≥ 0.3 s → `FULL SEND`.
+  - Hang: ≤ 2 % for ≥ 0.5 s, inside the armed span, with throttle > 20 % within 1.5 s before **and** after (so ground idle before take-off, after landing or after a crash never counts) → `HANG TIME`.
+  - Span events carry `end` (frame), `t0`, `dur`. The renderer shows a live timer `elapsed = clamp(frameTime − t0, 0, dur)` with ms, freezes and pops at the end, and keeps it 1.5 s (`SPAN_HOLD`). Active spans are looked up separately from `recent`, which only covers 2.5 s.
+- `stats` holds per-frame cumulative arrays: `fullTotal`, `hangBest`, `armedTime`. The Stats readout (style key `stats`) shows a line once its value is > 0, and fades out while a popup or timer uses the space above the gimbals.
 
 ## Render model (`src/render/draw.ts`)
 
@@ -58,7 +62,7 @@ video File ─ openVideo → VideoInfo ─ analyzeFlow → FlowSample[] ─ find
   3. Base: plates, grid, crosshair, ring (circle, square, brackets; `ring:'rainbow'` = rotating conic gradient), throttle bar, readout, labels.
   4. FX on `fx` with `lighter`: trails (quadratic through midpoints; rainbow hue per spawn frame), halos, embers, flame, sparks, bursts, shockwaves.
   5. Composite fx: chromatic fringes (multiply-tinted copies offset ±d), then bloom (b1 and b2 upscaled with `lighter`).
-  6. Crisp dots (circle or block cursor) and text (pop or terminal popups, score, +points).
+  6. Crisp dots (circle or block cursor) and text (pop or terminal popups, throttle timers, stats readout).
   7. Glitch bands: copy to `tint`, then shift random horizontal bands on impacts.
   8. Scanlines: `destination-out` rows, which make the overlay itself striped.
 - **Particle shapes:** `streak` (line from p(t−30 ms) to p(t)), `star` (4-point twinkle, slower, less gravity), `glyph` (katakana/0-1 characters that burst then rain down).
