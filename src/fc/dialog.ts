@@ -188,9 +188,9 @@ export function initFcDialog(dlg: HTMLDialogElement, trigger: HTMLButtonElement,
       confirmErase = false;
       erase.disabled = true;
       status.classList.remove('err');
-      status.textContent = 'Erasing the flash… this takes a few seconds.';
+      status.textContent = 'Erasing the flash… this can take up to a minute. Keep the flight controller plugged in.';
       try {
-        await eraseFlash(link);
+        await eraseFlash(link, (ms) => { status.textContent = `Erasing the flash… ${Math.round(ms / 1000)} s (can take up to a minute). Keep the flight controller plugged in.`; });
         flash = await flashSummary(link);
         hooks.onErased();
         status.textContent = 'Flash erased. You have the full capacity again.';

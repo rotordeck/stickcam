@@ -17,11 +17,12 @@ function huffmanEncode(data: Uint8Array): Uint8Array {
 }
 
 /** A pretend flight controller on the other end of a serial port. */
-function fakeFc(flash: Uint8Array, opts: { compress: boolean; corruptFirstRead?: boolean }) {
+function fakeFc(flash: Uint8Array, opts: { compress: boolean; corruptFirstRead?: boolean; silentEraseMs?: number }) {
   // Settings state of the pretend FC (API 1.47, 4 kHz PID loop, default blackbox config).
   const state = { bb: Uint8Array.from([1, 1, 1, 1, 2, 0, 2, 0, 0, 0, 0]), log: [] as string[], flashUsed: flash.length };
   let rx = new Uint8Array(0);
   let corrupted = false;
+  let busyUntil = 0; // like some real flash chips: no MSP answers at all while erasing
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   const readable = new ReadableStream<Uint8Array>({ start: (c) => { controller = c; } });
   const reply = (code: number, payload: Uint8Array) => {
@@ -42,6 +43,8 @@ function fakeFc(flash: Uint8Array, opts: { compress: boolean; corruptFirstRead?:
         const len = rx[3], code = rx[4], p = rx.slice(5, 5 + len);
         rx = rx.slice(len + 6);
         const v = new DataView(p.buffer);
+        if (Date.now() < busyUntil) continue;
+        if (code === 72 && opts.silentEraseMs) { state.log.push('erase'); state.flashUsed = 0; busyUntil = Date.now() + opts.silentEraseMs; continue; }
         if (code === 1) reply(1, Uint8Array.from([0, 1, 47]));
         else if (code === 4) {
           const t = (x: string) => [x.length, ...[...x].map((c) => c.charCodeAt(0))];
@@ -136,5 +139,20 @@ describe('blackbox settings over MSP', () => {
     await eraseFlash(link);
     await link.close();
     expect(fc.state.log).toEqual(['erase']);
+  });
+  it('keeps waiting when the FC goes silent while erasing', async () => {
+    const fc = fakeFc(flashImage(), { compress: false, silentEraseMs: 700 });
+    const link = await connectTo(fc);
+    const waits: number[] = [];
+    await eraseFlash(link, (ms) => waits.push(ms), 5000, 300, 50); // erase reply and some polls time out
+    await link.close();
+    expect(fc.state.log).toEqual(['erase']);
+    expect(waits.at(-1)!).toBeGreaterThan(700);
+  });
+  it('gives up after the deadline', async () => {
+    const fc = fakeFc(flashImage(), { compress: false, silentEraseMs: 60_000 });
+    const link = await connectTo(fc);
+    await expect(eraseFlash(link, undefined, 400, 100, 50)).rejects.toThrow(/taking too long/);
+    await link.close();
   });
 });

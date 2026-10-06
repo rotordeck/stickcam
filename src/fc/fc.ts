@@ -277,14 +277,31 @@ export async function setBlackboxConfig(link: FcLink, cfg: BbConfig, minor: numb
   return back;
 }
 
-/** Erase the onboard flash and wait until it reports empty. */
-export async function eraseFlash(link: FcLink, onWait?: () => void): Promise<void> {
-  await link.request(MSP_DATAFLASH_ERASE, [], 5000);
-  for (let i = 0; i < 120; i++) {
-    await new Promise((r) => setTimeout(r, 500));
-    onWait?.();
-    const s = await flashSummary(link);
+const isTimeout = (e: unknown) => e instanceof FcError && e.retryable;
+
+/**
+ * Erase the onboard flash and wait until it reports empty. Some flash chips stop the FC from answering MSP
+ * while they erase (configurator: `useDataflashErase.ts`), so a missing reply, to the erase or to a summary
+ * poll, means "still busy" until the overall deadline. A full 16 MB chip erase takes tens of seconds.
+ */
+export async function eraseFlash(link: FcLink, onWait?: (elapsedMs: number) => void, deadlineMs = 180_000, replyMs = 60_000, pollMs = 500): Promise<void> {
+  const t0 = Date.now();
+  try {
+    await link.request(MSP_DATAFLASH_ERASE, [], replyMs);
+  } catch (e) {
+    if (!isTimeout(e)) throw e;
+  }
+  while (Date.now() - t0 < deadlineMs) {
+    await new Promise((r) => setTimeout(r, pollMs));
+    onWait?.(Date.now() - t0);
+    let s: FlashSummary;
+    try {
+      s = await flashSummary(link);
+    } catch (e) {
+      if (isTimeout(e)) continue;
+      throw e;
+    }
     if (s.ready && s.used === 0) return;
   }
-  throw new FcError('Erasing is taking too long. Check Betaflight Configurator.');
+  throw new FcError('Erasing is taking too long. Check the flash in Betaflight Configurator (Blackbox tab).');
 }
