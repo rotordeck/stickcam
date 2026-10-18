@@ -1,13 +1,16 @@
 # StickCam
 
-Turn a Betaflight blackbox log into a stick-cam overlay video, from a clean white dot to completely over the top: sparks on fast stick moves, shockwaves on full-deflection snaps, combo popups on flips and rolls, afterburner flames on punch-outs, and a WASTED card when you crash.
+Turn a Betaflight blackbox log into a stick-cam overlay video, from a clean white dot to completely over the top: sparks on fast stick moves, shockwaves on full-deflection snaps, combo popups on flips and rolls, afterburner flames on punch-outs, FULL SEND and HANG TIME timers measured to the millisecond, and a WASTED card when you crash.
 
 Everything runs in the browser. The log never leaves your machine, and the site is plain static files.
 
 ## Use it
 
 1. Drop a `.bbl`/`.bfl` log, or pick a sample. Multi-flight files show a flight list.
+   - **Or read it straight from the flight controller** over USB (WebSerial, Chrome or Edge): download the onboard flash, erase it, and change the blackbox logging settings in a dialog. Tested against a simulated flight controller; erasing waits for flash chips that go silent, like the Configurator.
 2. Pick a style and tweak it. Chaos scales every effect, and the settings live in the URL hash, so a link shares your look.
+   - **Presets** saves your own looks in the browser (with thumbnails): apply, update, rename, delete, and export or import them as JSON to share. The Sky preview banks and pitches with the sticks while it plays.
+   - Instead of a score, a stats readout shows FULL THR, HANG MAX and ARMED time; combos come from real gyro tricks only.
 3. Drag the timeline handles to trim. The default is the armed span plus a short outro.
 4. **Optional: add your FPV video** (drop it with the log, or use "+ Add your FPV video").
    - It plays behind the overlay. **Auto-sync** matches the camera motion (phase-correlation optical flow) against the gyro of every flight in the log, then picks the flight and the offset.
@@ -34,7 +37,7 @@ Resuming work? Start with [`CLAUDE.md`](CLAUDE.md) and [`docs/architecture.md`](
 ```sh
 npm install
 npm run dev      # http://localhost:5173
-npm test         # vitest: decoder, track, motion events, layout
+npm test         # vitest: decoder, track, motion events, layout, presets, flight controller (fake FC)
 npm run build    # static site in dist/ (BASE=/sub/path/ npm run build for a sub-path)
 ```
 
@@ -42,7 +45,9 @@ Layout:
 
 - `src/decoder/`: `bbl.js` and `units.js`, copied unchanged from fpvstream `viewer/src`. Fix decoder bugs there first, then re-copy.
 - `src/track.ts`: the flight resampled to the output fps, sticks normalised (-1..1, throttle 0..1), and gaps marked as not live.
-- `src/motion.ts`: stick speeds and events (snap, punch, flip/roll/spin from the integrated full-rate gyro, combo, crash, arm/disarm, score).
+- `src/motion.ts`: stick speeds and events (snap, punch, flip/roll/spin from the integrated full-rate gyro, combo, crash, arm/disarm, full-throttle and hang-time spans, stats).
+- `src/fc/`: the flight controller over WebSerial: MSP client, dataflash download (with Huffman decoding), erase, blackbox config codec and profiles, the Logging settings dialog.
+- `src/presets.ts`: saved looks (localStorage), export and import with clash handling.
 - `src/render/`: `draw.ts` renders a frame as a pure function of the frame index. Particles are regenerated from a seeded hash of their spawn frame, so preview, seek and export always match. `style.ts` holds the presets and `layout.ts` the sizes.
 - `src/export/export.ts`: WebCodecs + Mediabunny for WebM and MP4, and ffmpeg.wasm for ProRes (PNG chunks → `.mov` chunks → concat).
 - `src/sync.ts`: global camera motion by FFT phase correlation (128×64 frames) and the offset search against the gyro. `src/video.ts` opens the video with Mediabunny and runs the motion pass.
