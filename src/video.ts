@@ -5,6 +5,7 @@ import { FLOW_H, FLOW_W, FlowEstimator, type FlowSample } from './sync.ts';
 export interface VideoInfo {
   file: File;
   url: string;
+  /** Display size, rounded down to even. */
   width: number; height: number;
   /** Frame rate snapped to a standard rate when close (VFR cameras land on their average). */
   fps: number;
@@ -31,7 +32,8 @@ export async function openVideo(file: File): Promise<VideoInfo> {
   const [stats, duration, first] = await Promise.all([track.computePacketStats(300), input.computeDuration(), track.getFirstTimestamp()]);
   return {
     file, url: URL.createObjectURL(file),
-    width: track.displayWidth, height: track.displayHeight,
+    // Even sizes: H.264 4:2:0 can't encode odd ones, and non-square-pixel DVRs can display at one (720×486 → 720×547).
+    width: track.displayWidth & ~1, height: track.displayHeight & ~1,
     fps: snapFps(stats.averagePacketRate || 30),
     duration: duration - first, first, track,
   };

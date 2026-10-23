@@ -90,6 +90,19 @@ video File ─ openVideo → VideoInfo ─ analyzeFlow → FlowSample[] ─ find
 - **Cost:** about 3.7 s of JS for 6275 frames. In the browser, about 17 s end to end for a 3-minute 640×480 video, including decode.
 - **fps:** `computePacketStats(300).averagePacketRate`, snapped to the **nearest** standard rate within 1.5 % (exact 1001 fractions), else rounded to 0.01.
 
+## DVR clean pass (`src/clean/`)
+
+Optional pre-pass, a port of two stages of [FPV DVR Cleaner](https://github.com/Bratwurstexe/FPV_DVR_CLEANER) @ `264d232` (MIT; Python/OpenCV there, pure TS here): `analog.py` → `analog.ts`, `digital.py` → `hdzero.ts`. Fix logic bugs upstream first, like the decoder.
+
+- **Never inside `renderFrame`.** Both repairs need ±3 neighbouring frames, and Mediabunny's `Conversion.process` has no lookahead. Cleaning produces a new input video instead, so the render model and determinism are untouched.
+- **Ops** (`image.ts`) follow OpenCV semantics: BGR↔YCrCb with uint8 rounding, INTER_AREA/LINEAR/NEAREST, `blur` and `GaussianBlur` with REFLECT_101 (fixed kernels for k ≤ 7 when sigma = 0, k = round(8σ+1)|1 for floats), rect `dilate`, `remap` linear with replicate border, and truncation where the original does `astype(uint8)`.
+- **Flow** (`flow.ts`): DIS-fast-like. Pyramid by INTER_AREA halving, coarsest = round(log2(2w/32)), finest scale 2, 8×8 patches with stride 4 (last patch flush with the edge), mean-normalised inverse-compositional Gauss-Newton (2 sweeps × 8 iterations with forward/backward spatial propagation), densified with weight 1/max(1,|I1(x+u)−I0(x)|), no variational refinement. Synthetic shift error ≈ 0.2–0.25 px at 320×240, 5–12 ms.
+- **Chunks** (`clean.ts`, `worker.ts`): decode the cut ± (RADIUS+1)/fps, draw each `VideoSample` to RGBA, and send chunks of 24 frames plus 3 context frames on each side to a pool of `hardwareConcurrency − 1` (max 8) module workers, with results written in order. Black side bars are found once (8 samples, 90th-percentile luma > 24, ≥ 5 % of the frame, even edges) and skipped.
+- **Output:** `VideoSampleSource` H.264 `QUALITY_VERY_HIGH`, each frame with its **source timestamp − cut start** and duration (VFR kept; verified frame for frame, max |Δt| 16 µs on the real session). Audio packets of the cut are copied with `EncodedPacketSink` → `EncodedAudioPacketSource` when MP4 can hold the codec; packets starting before the cut are dropped.
+- **Swap** (`repair.ts` `toCleaned`/`toOriginal`, `useCleaned`/`useOriginal` in `main.ts`): clip time 0 = original cut start, so `offset += cutStart`, trim = [0, clip duration]. Going back subtracts it again, and restores the exact original cut if the trim wasn't touched. Auto-sync and burn-in work on the cleaned clip unchanged.
+- **Parity with the Python engine** (24 real 640×480 frames, scripts in a scratch venv, not in the repo): analog 40–49 dB PSNR against the original's output; HDZero confetti test (15 % of blocks), the same 908 blocks rebuilt (10/14 differ), 24.5 dB vs Python's 24.9 dB against the clean frame. Single-threaded cost: analog ≈ 120 ms/frame, HDZero ≈ 18 ms/frame at 640×480. A 48.8 s cut (1454 frames) took 38 s in Chrome on 24 cores.
+- **Limit:** chroma is repaired on a grid of every 4th column and every 2nd row, so a hue that flips on every single pixel row can't be removed, in the original either. Real carrier stripes are a few rows tall.
+
 ## Export (`src/export/export.ts`)
 
 - **webm/mp4:** `Output` + `CanvasSource` (Mediabunny), `QUALITY_HIGH`, keyframe every 2 s.
@@ -114,7 +127,8 @@ video File ─ openVideo → VideoInfo ─ analyzeFlow → FlowSample[] ─ find
 - **Timeline with a video:** the top 58 % is the flight lane (drag = shift offset, live), the bottom is the video lane (scrub, trim handles). Without a video it is a single lane.
 - **Playback with a video:** the `<video>` element drives the frame through rAF reading `currentTime`, and loops within the trim. Scrubbing seeks the video.
 - **Sky preview background** (`updateSky` in `main.ts`): a DOM layer under the preview canvas, never exported. While playing (no video, not reduced-motion) it banks with roll (32° at full stick) and shifts with pitch, using the mean stick over the last 0.3 s, a pure function of the frame. Paused, it eases back to level through a CSS transition.
-- **URL hash** holds base64 JSON `{p, o, s:{mode,size,gap,position,chaos,fps,offsetX,offsetY}, z, f}`.
+- **URL hash** holds base64 JSON `{p, o, s:{mode,size,gap,position,chaos,fps,offsetX,offsetY}, z, f, c:{k, a}}` (`c` = clean kind and strength).
+- **`S.clean`:** kind, amount, `original`/`cleaned` VideoInfos, `shift` (cut start of the clean) and `cut`. `dropCleaned()` on load or remove of a video revokes both URLs.
 - **User presets** (`src/presets.ts`): a `Look` is `{presetId, overrides, settings:{mode,size,gap,position,chaos,offsetX,offsetY}}`, i.e. the hash minus fps, size and format (those follow the footage). Stored as a `UserPreset[]` under localStorage `stickcam.presets.v1`. Export file: `{app:'stickcam', kind:'presets', version:1, exported, presets}`. Everything read back (storage or file) goes through `sanitizeLook`: unknown base preset → arcade, override keys/types checked against the built-in `Style`, settings defaulted. Import: `planImport` marks each incoming look new / same / conflict by case-insensitive name; identical looks are skipped silently, and only conflicts open the dialog. The card matching the on-screen look is highlighted (`markUserPresets`, called from `saveHash`).
 
 ## Verified facts (keep in mind)
@@ -127,6 +141,8 @@ video File ─ openVideo → VideoInfo ─ analyzeFlow → FlowSample[] ─ find
 | Synced overlay length equals video length (189.207 s vs 189.202 s) | ffprobe |
 | Auto-sync: flight 1 at 88.92 s, flight 3 at 144.01 s (OSD truth ≈89 / 144) | browser + Node |
 | Linux Chrome: `canEncodeAudio('aac') === false`, `opus === true` | in-page probe |
+| Non-square-pixel DVRs display at odd sizes (720×486 SAR 8:9 → 720×547); `openVideo` rounds width/height down to even so H.264 burn-in and clean can encode | burn + clean of `deadprop.mp4`, 2026-10-23 |
+| Cleaned clip keeps every source frame and timestamp (1454 frames, max Δt 16 µs); swap keeps the OSD frame at the same log time | ffprobe, 2026-10-23 |
 
 ## Flight controller logging (what StickCam needs)
 

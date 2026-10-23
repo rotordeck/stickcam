@@ -72,7 +72,7 @@
 
     <section class="stage-wrap">
       <div class="stage" id="stage" data-bg="sky">
-        <div class="frame" id="frame"><div class="sky" aria-hidden="true"><div class="sky-world" id="skyWorld"></div></div><video id="vid" playsinline preload="auto" hidden></video><canvas id="preview"></canvas></div>
+        <div class="frame" id="frame"><div class="sky" aria-hidden="true"><div class="sky-world" id="skyWorld"></div></div><video id="vid" playsinline preload="auto" hidden></video><canvas id="preview"></canvas><canvas id="cmp" hidden></canvas></div>
         <div class="empty" id="empty">Load a log or pick a sample to start</div>
       </div>
       <div class="transport">
@@ -84,6 +84,7 @@
       </div>
       <div class="syncbar" id="syncbar" hidden>
         <div class="sync-ctl" id="syncCtl"></div>
+        <div class="sync-ctl clean-ctl" id="cleanCtl" hidden></div>
         <p class="sync-note" id="syncNote"></p>
       </div>
       <div class="timeline" id="timeline">

@@ -164,5 +164,14 @@ dialog progress { width: 100%; height: 10px; accent-color: var(--accent); }
 .sync-ctl button:disabled { opacity: .4; cursor: not-allowed; }
 .sync-ctl i { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
 .sync-at { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--accent); margin-right: 6px; min-width: 118px; }
+.clean-ctl { border-top: 1px dashed var(--line); padding-top: 6px; }
+.clean-ctl[hidden] { display: none; }
+.clean-ctl select { border: 1px solid var(--line); background: var(--panel-2); border-radius: 6px; padding: 3px 6px; font-size: 12.5px; }
+.clean-ctl input[type=range] { width: 110px; accent-color: var(--accent); }
+.clean-ctl output { font-variant-numeric: tabular-nums; font-size: 12.5px; min-width: 2ch; color: var(--muted); }
+.clean-ctl a.btn { border: 1px solid var(--line); background: var(--panel-2); border-radius: 6px; padding: 4px 9px; font-size: 12.5px; color: inherit; text-decoration: none; }
+.clean-ctl a.btn:hover { border-color: var(--accent); }
+.frame #cmp { object-fit: contain; background: #000; cursor: ew-resize; z-index: 2; }
+.frame #cmp[hidden] { display: none; }
 .sync-note { margin: 0; font-size: 12.5px; color: var(--muted); }
 .sync-note.warn { color: #ffb86b; }

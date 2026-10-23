@@ -17,6 +17,7 @@ Everything runs in the browser. The log never leaves your machine, and the site 
    - To fix it by hand, drag the flight lane on the timeline or use the ±1 frame / ±1 s nudges.
    - Output size and frame rate switch to the video's, and the overlay covers the whole video, so you can drop it at 0:00. Use "Trim to flight" to cut it down; the hint then tells you where to place it.
    - **Cut video + sticks burned in** exports the trimmed video with the overlay drawn in, plus its audio, as a ready-to-post MP4.
+   - **Optional: Clean DVR.** Repairs goggle recordings before the sticks go on: analog colour dropouts and rainbow stripes, or HDZero breakups ("confetti"). "Check frame" shows a before/after split of the current frame, and "Clean cut" repairs every frame of the cut on all cores and switches to the cleaned clip, keeping sync, cut and audio. "Use original" switches back. A browser port of two stages of [FPV DVR Cleaner](https://github.com/Bratwurstexe/FPV_DVR_CLEANER) (MIT); its desktop app also removes the OSD and upscales.
 5. Export:
 
 | Format | Transparency | Best for |

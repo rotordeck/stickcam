@@ -14,6 +14,9 @@ import { analyzeFlow, openVideo, type VideoInfo } from './video.ts';
 import { initFcDialog } from './fc/dialog.ts';
 import { FcLink, fcSupported, pullDataflash } from './fc/fc.ts';
 import { findOffset, type SyncResult } from './sync.ts';
+import { cleanCut, previewFrame } from './clean/clean.ts';
+import type { Rgba } from './clean/image.ts';
+import { DEFAULT_AMOUNT, toCleaned, toOriginal, type CleanKind } from './clean/repair.ts';
 import {
   LOOK_SETTINGS, applyImport, defaultChoices, exportFile, findByName, loadPresets, lookEquals, newId, parseImport, planImport, sanitizeLook, savePresets,
   type ImportChoice, type ImportItem, type Look, type UserPreset,
@@ -44,6 +47,16 @@ const S = {
   video: null as VideoInfo | null,
   /** log time = video time + offset (s). */
   offset: 0,
+  /** Optional DVR clean pass. `shift` = cut start the cleaned clip was made from (original video seconds). */
+  clean: {
+    kind: 'auto' as CleanKind | 'auto',
+    amount: DEFAULT_AMOUNT.analog,
+    original: null as VideoInfo | null,
+    cleaned: null as VideoInfo | null,
+    shift: 0,
+    /** The cut the clean was made from, restored on the way back if the trim wasn't touched. */
+    cut: [0, 0] as [number, number],
+  },
 };
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -63,7 +76,7 @@ function status(msg: string, err = false) {
 
 function saveHash() {
   const { mode, size, gap, position, chaos, fps, offsetX, offsetY } = S.settings;
-  const st = { p: S.presetId, o: S.overrides, s: { mode, size, gap, position, chaos, fps, offsetX, offsetY }, z: S.sizeId, f: S.format };
+  const st = { p: S.presetId, o: S.overrides, s: { mode, size, gap, position, chaos, fps, offsetX, offsetY }, z: S.sizeId, f: S.format, c: { k: S.clean.kind, a: S.clean.amount } };
   history.replaceState(null, '', '#' + btoa(unescape(encodeURIComponent(JSON.stringify(st)))));
   markUserPresets(); // every look change ends up here
 }
@@ -76,6 +89,7 @@ function loadHash() {
     if (st.s) Object.assign(S.settings, st.s);
     if (st.z && SIZE_PRESETS.some((z) => z.id === st.z)) S.sizeId = st.z;
     if (st.f) S.format = st.f;
+    if (st.c && ['auto', 'analog', 'hdzero'].includes(st.c.k)) { S.clean.kind = st.c.k; S.clean.amount = Math.max(0, Math.min(100, +st.c.a || 0)); }
   } catch { /* ignore a bad hash */ }
 }
 
@@ -244,6 +258,7 @@ const fmtTime = (t: number) => `${t < 0 ? '-' : ''}${Math.floor(Math.abs(t) / 60
 function seekFrame(i: number) {
   if (!S.cur) return;
   S.frame = Math.max(0, Math.min(S.cur.track.frames - 1, i));
+  closeCompare();
   if (S.video && !S.playing) vid.currentTime = S.trim[0] + S.frame / S.settings.fps + 1e-3;
   draw();
 }
@@ -253,6 +268,7 @@ function seekFrame(i: number) {
 let raf = 0, playT0 = 0, playF0 = 0;
 function setPlaying(on: boolean) {
   S.playing = on && !!S.cur;
+  if (S.playing) closeCompare();
   $('play').textContent = S.playing ? '❚❚' : '▶';
   updateSky(); // pausing eases the horizon back to level
   cancelAnimationFrame(raf);
@@ -411,6 +427,7 @@ async function loadVideo(file: File) {
     setSyncNote(`Opening ${file.name}…`);
     $('syncbar').hidden = false;
     const v = await openVideo(file);
+    dropCleaned();
     if (S.video) URL.revokeObjectURL(S.video.url);
     S.video = v;
     vid.src = v.url;
@@ -433,6 +450,7 @@ async function loadVideo(file: File) {
 function removeVideo() {
   setPlaying(false);
   syncAbort?.abort();
+  dropCleaned();
   if (S.video) URL.revokeObjectURL(S.video.url);
   S.video = null; S.offset = 0;
   vid.removeAttribute('src'); vid.load();
@@ -522,6 +540,189 @@ function renderSyncBar() {
   });
   btn('Whole video', 'Export the full length of the video', () => { if (S.video) { S.trim = [0, S.video.duration]; S.frame = 0; rebuildCur(); drawTimeline(); } });
   btn('Remove video', 'Go back to overlay-only', removeVideo);
+  renderCleanBar();
+}
+
+// ---------- optional DVR clean pass ----------
+
+/** Forget the cleaned clip (and the original behind it, when the cleaned one is showing). */
+function dropCleaned() {
+  closeCompare();
+  const { original, cleaned } = S.clean;
+  if (original && original !== S.video) URL.revokeObjectURL(original.url);
+  if (cleaned && cleaned !== S.video) URL.revokeObjectURL(cleaned.url);
+  S.clean.original = S.clean.cleaned = null;
+}
+
+/** Put a video on screen without touching sync or trim (the callers adjust those). */
+function showVideo(v: VideoInfo) {
+  setPlaying(false);
+  S.video = v;
+  vid.src = v.url;
+  S.frame = 0;
+  rebuildCur(); drawTimeline(); renderSyncBar();
+}
+
+function useCleaned() {
+  const { cleaned } = S.clean;
+  if (!cleaned || S.video === cleaned) return;
+  const c = toCleaned(S.offset, [S.clean.shift, S.clean.shift + cleaned.duration]);
+  S.offset = c.offset; S.trim = c.trim;
+  showVideo(cleaned);
+  setSyncNote('Showing the cleaned clip. Sync and cut carry over; export uses it too.');
+}
+
+function useOriginal() {
+  const { original } = S.clean;
+  if (!original || S.video === original) return;
+  const o = toOriginal(S.offset, S.trim, S.clean.shift);
+  const untouched = Math.abs(S.trim[0]) < 1e-6 && Math.abs(S.trim[1] - S.clean.cleaned!.duration) < 1e-6;
+  S.offset = o.offset; S.trim = untouched ? [...S.clean.cut] : o.trim;
+  showVideo(original);
+  setSyncNote('Showing the original video.');
+}
+
+function renderCleanBar() {
+  const el = $('cleanCtl');
+  el.innerHTML = '';
+  el.hidden = !S.video;
+  if (!S.video) return;
+  const using = S.clean.cleaned && S.video === S.clean.cleaned;
+  const title = document.createElement('span');
+  title.className = 'sync-at';
+  title.textContent = 'Clean DVR';
+  title.title = 'Optional: repair analog colour dropouts and rainbow stripes, or HDZero breakups, before the sticks go on. Ported from FPV DVR Cleaner.';
+  const kind = document.createElement('select');
+  kind.title = 'Which repair: analog colour or HDZero breakups';
+  for (const [v, l] of [['auto', 'Auto'], ['analog', 'Analog colour'], ['hdzero', 'HDZero breakups']]) kind.add(new Option(l, v, false, v === S.clean.kind));
+  kind.onchange = () => {
+    S.clean.kind = kind.value as CleanKind | 'auto';
+    S.clean.amount = DEFAULT_AMOUNT[S.clean.kind === 'hdzero' ? 'hdzero' : 'analog'];
+    renderCleanBar(); saveHash();
+  };
+  const amt = document.createElement('input');
+  amt.type = 'range'; amt.min = '0'; amt.max = '100'; amt.value = String(S.clean.amount);
+  amt.title = S.clean.kind === 'hdzero' ? 'Breakup detection: higher finds more' : 'Colour calming: higher smooths colour more (0 = off)';
+  const val = document.createElement('output');
+  val.textContent = String(S.clean.amount);
+  amt.oninput = () => { S.clean.amount = +amt.value; val.textContent = amt.value; };
+  amt.onchange = () => { saveHash(); if (cmpOpen) void openCompare(); };
+  const mk = (label: string, tip: string, fn: () => void) => {
+    const b = document.createElement('button'); b.textContent = label; b.title = tip; b.onclick = fn; return b;
+  };
+  el.append(title, kind, amt, val);
+  if (!using) {
+    el.append(mk(cmpOpen ? 'Close check' : 'Check frame', 'Before / after of the current frame (drag across the picture)', () => (cmpOpen ? closeCompare() : void openCompare())));
+    el.append(mk('Clean cut', 'Repair every frame of the current cut and use the result (takes a while; runs on all cores)', () => void runClean()));
+  }
+  if (S.clean.cleaned) {
+    el.append(mk(using ? 'Use original' : 'Use cleaned', using ? 'Back to the original video' : 'Switch to the cleaned clip', using ? useOriginal : useCleaned));
+    const a = document.createElement('a');
+    a.className = 'btn'; a.textContent = 'Save cleaned'; a.href = S.clean.cleaned.url; a.download = S.clean.cleaned.file.name;
+    el.append(a);
+  }
+}
+
+// Before / after check: the current frame through the repair, split by a draggable line.
+const cmp = $<HTMLCanvasElement>('cmp');
+const cctx = cmp.getContext('2d')!;
+let cmpOpen = false, cmpSplit = 0.5, cmpImgs: { before: ImageData; after: ImageData } | null = null;
+
+function drawCompare() {
+  if (!cmpImgs) return;
+  const { before, after } = cmpImgs, x = Math.round(cmp.width * cmpSplit);
+  cctx.putImageData(before, 0, 0);
+  cctx.putImageData(after, 0, 0, x, 0, cmp.width - x, cmp.height);
+  cctx.fillStyle = '#fff';
+  cctx.fillRect(x - 1, 0, 2, cmp.height);
+  cctx.font = `600 ${Math.max(12, cmp.height / 28)}px system-ui, sans-serif`;
+  cctx.shadowColor = '#000'; cctx.shadowBlur = 4;
+  cctx.textAlign = 'right'; cctx.fillText('original', x - 8, cmp.height / 18);
+  cctx.textAlign = 'left'; cctx.fillText('cleaned', x + 8, cmp.height / 18);
+  cctx.shadowBlur = 0;
+}
+
+async function openCompare() {
+  if (!S.video) return;
+  setPlaying(false);
+  const v = S.video, t = S.trim[0] + S.frame / S.settings.fps;
+  setSyncNote('Cleaning this frame…');
+  try {
+    const t0 = performance.now();
+    const res = await previewFrame(v, t, S.clean.kind, S.clean.amount);
+    const img = (f: Rgba) => new ImageData(new Uint8ClampedArray(f.d), f.w, f.h);
+    cmp.width = v.width; cmp.height = v.height;
+    cmpImgs = { before: img(res.before), after: img(res.after) };
+    cmpOpen = true; cmp.hidden = false;
+    drawCompare();
+    renderCleanBar();
+    setSyncNote(`${res.kind === 'analog' ? 'Analog colour' : 'HDZero breakup'} repair at ${fmtTime(t)} in ${Math.round(performance.now() - t0)} ms. Drag across the picture to compare; change the strength to retry.`);
+  } catch (e) {
+    setSyncNote(`Frame check failed: ${(e as Error).message}`, true);
+  }
+}
+
+function closeCompare() {
+  if (!cmpOpen) return;
+  cmpOpen = false; cmpImgs = null; cmp.hidden = true;
+  renderCleanBar();
+}
+
+cmp.addEventListener('pointermove', (e) => {
+  const r = cmp.getBoundingClientRect();
+  cmpSplit = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+  drawCompare();
+});
+
+/** Clean the current cut, swap the clip in. Resolves to stats for the dev hook. */
+async function cleanCurrentCut(signal: AbortSignal, onProgress: (done: number, total: number, phase: string) => void) {
+  const original = S.clean.original ?? S.video!;
+  if (S.video !== original) useOriginal();
+  const [start, end] = S.trim;
+  const t0 = performance.now();
+  const res = await cleanCut({ video: original, start, end, kind: S.clean.kind, amount: S.clean.amount, signal, onProgress });
+  const clip = await openVideo(res.file);
+  if (S.clean.cleaned) URL.revokeObjectURL(S.clean.cleaned.url);
+  S.clean.original = original; S.clean.cleaned = clip; S.clean.shift = start; S.clean.cut = [start, end];
+  closeCompare();
+  useCleaned();
+  return { ...res, ms: Math.round(performance.now() - t0), clip };
+}
+
+async function runClean() {
+  if (!S.video) return;
+  setPlaying(false);
+  abort = new AbortController();
+  const save = $<HTMLAnchorElement>('exSave');
+  save.hidden = true;
+  $('exTitle').textContent = 'Cleaning the DVR…';
+  $('exCancel').textContent = 'Cancel';
+  const bar = $<HTMLProgressElement>('exBar');
+  bar.value = 0;
+  dlg.showModal();
+  const t0 = performance.now();
+  try {
+    const res = await cleanCurrentCut(abort.signal, (done, total, phase) => {
+      bar.value = done / total;
+      const el = (performance.now() - t0) / 1000;
+      const eta = done > 8 ? ` · ${Math.ceil((el / done) * (total - done))} s left` : '';
+      $('exPhase').textContent = `${phase} · frame ${done}/${total}${eta}`;
+    });
+    save.href = res.clip.url; save.download = res.file.name;
+    save.hidden = false;
+    $('exTitle').textContent = 'Cleaned';
+    const bars = res.box.w < res.clip.width || res.box.h < res.clip.height ? ` · picture ${res.box.w}×${res.box.h} inside bars` : '';
+    $('exPhase').textContent = `${res.kind === 'analog' ? 'Analog colour' : 'HDZero breakups'} · ${res.frames} frames · ${(res.ms / 1000).toFixed(1)} s${bars}${res.audio ? ' · audio copied' : ''}. The cleaned clip is now in use.`;
+    $('exCancel').textContent = 'Close';
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') { dlg.close(); return; }
+    $('exTitle').textContent = 'Cleaning failed';
+    $('exPhase').textContent = (e as Error).message;
+    $('exCancel').textContent = 'Close';
+    console.error(e);
+  } finally {
+    abort = null;
+  }
 }
 
 // ---------- presets ----------
@@ -1120,6 +1321,13 @@ if (import.meta.env.DEV) {
         const get = async (u: string) => new File([await (await fetch(u)).blob()], u.split('/').pop()!, { type: u.endsWith('.mp4') ? 'video/mp4' : '' });
         await openFiles([...(log ? [await get(log)] : []), ...(video ? [await get(video)] : [])]);
       },
+      async clean(kind: CleanKind | 'auto' = 'auto', amount?: number) {
+        S.clean.kind = kind;
+        S.clean.amount = amount ?? DEFAULT_AMOUNT[kind === 'hdzero' ? 'hdzero' : 'analog'];
+        const res = await cleanCurrentCut(new AbortController().signal, () => {});
+        return { kind: res.kind, box: res.box, frames: res.frames, audio: res.audio, ms: res.ms, bytes: res.file.size, offset: S.offset, trim: S.trim };
+      },
+      useOriginal, useCleaned,
       set(p: { preset?: string; size?: string; fps?: number }) {
         if (p.preset) { S.presetId = p.preset; S.overrides = {}; }
         if (p.size) S.sizeId = p.size;
