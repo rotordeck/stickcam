@@ -2,9 +2,11 @@
 //   webm   – VP9 with alpha via WebCodecs (Mediabunny muxes the alpha side data into WebM BlockAdditions)
 //   mp4    – H.264 on a solid key colour via WebCodecs
 //   prores – ProRes 4444 with alpha via ffmpeg.wasm (lazy-loaded, PNG chunks → .mov chunks → concat)
-//   burn   – the user's video, cut to the trim range, with the overlay composited in (H.264 + original audio)
+//   burn   – the user's video, cut to the trim range, with the overlay composited in (H.264 + original audio),
+//            optionally with the DVR clean pass on the way (one decode, one encode)
 import { ALL_FORMATS, BlobSource, BufferTarget, CanvasSource, Conversion, Input, Mp4OutputFormat, Output, QUALITY_HIGH, WebMOutputFormat, canEncodeVideo } from 'mediabunny';
 import { createScene, renderFrame, type Scene } from '../render/draw.ts';
+import { cleanFrames, cutAudio, logStats, newStats } from '../clean/pool.ts';
 import type { CleanOptions } from '../clean/repair.ts';
 import type { VideoInfo } from '../video.ts';
 
@@ -79,7 +81,11 @@ async function exportWebCodecs(job: ExportJob): Promise<ExportResult> {
 
 // ---------- burned-in: cut video + overlay ----------
 
+/** Overlay frame for a video frame `t` seconds into the cut (the trimmed track starts at the cut). */
+export const overlayIndex = (t: number, fps: number, total: number) => Math.max(0, Math.min(total - 1, Math.round(t * fps)));
+
 async function exportBurned(job: ExportJob): Promise<ExportResult> {
+  if (job.clean && job.video?.info) return exportBurnedClean(job);
   const { scene, signal } = job;
   const v = job.video!;
   const { W, H } = scene.layout; // the scene is laid out at the video's own size
@@ -98,7 +104,7 @@ async function exportBurned(job: ExportJob): Promise<ExportResult> {
       process: (sample) => {
         if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
         base ??= sample.timestamp > v.start - 0.25 && v.start > 0.5 ? v.start : 0;
-        const i = Math.max(0, Math.min(total - 1, Math.round((sample.timestamp - base) * fps)));
+        const i = overlayIndex(sample.timestamp - base, fps, total);
         sample.drawWithFit(fctx, { fit: 'fill' });
         renderFrame(octx, scene, i, null);
         fctx.drawImage(over, 0, 0);
@@ -120,6 +126,55 @@ async function exportBurned(job: ExportJob): Promise<ExportResult> {
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
+  const buf = (output.target as BufferTarget).buffer!;
+  return { blob: new Blob([buf], { type: 'video/mp4' }), ext: 'mp4' };
+}
+
+/**
+ * Burn-in with the clean pass: cleaned frames come from the worker pool in order, each gets the overlay
+ * and goes straight to the encoder with its source timestamp; audio packets are copied as in cleanCut.
+ */
+async function exportBurnedClean(job: ExportJob): Promise<ExportResult> {
+  const { scene, signal } = job;
+  const v = job.video!, info = v.info!, opts = job.clean!;
+  const { W, H } = scene.layout;
+  const fps = scene.track.fps, total = scene.track.frames;
+  if (!(await canEncodeVideo('avc', { width: W, height: H }))) throw new Error('This browser can\'t encode H.264 video.');
+  const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
+  const frame = new OffscreenCanvas(W, H), fctx = frame.getContext('2d')!;
+  const over = new OffscreenCanvas(W, H), octx = over.getContext('2d')!;
+  // The cleaned picture is at the video's size; scaled only if the scene isn't (it normally is).
+  const same = info.width === W && info.height === H;
+  const pic = same ? null : new OffscreenCanvas(info.width, info.height);
+  const src = new CanvasSource(frame, { codec: 'avc', bitrate: QUALITY_HIGH });
+  output.addVideoTrack(src, { frameRate: fps });
+  const audio = await cutAudio(output, info, v.start, v.end, signal);
+  await output.start();
+  const stats = newStats(), t0 = performance.now();
+  const copying = audio.copy();
+  let n = 0;
+  try {
+    for await (const f of cleanFrames(info, v.start, v.end, opts, signal, { stats })) {
+      const t = performance.now();
+      const img = new ImageData(f.rgba.d as Uint8ClampedArray<ArrayBuffer>, f.rgba.w, f.rgba.h);
+      if (pic) { pic.getContext('2d')!.putImageData(img, 0, 0); fctx.drawImage(pic, 0, 0, W, H); } else fctx.putImageData(img, 0, 0);
+      renderFrame(octx, scene, overlayIndex(f.t, fps, total), null);
+      fctx.drawImage(over, 0, 0);
+      await src.add(f.t, f.d);
+      stats.encode += performance.now() - t;
+      if (++n % 4 === 0) job.onProgress(Math.min(n, total), total, 'Cleaning + rendering video + sticks');
+    }
+    if (!n) throw new Error('No frames in this cut.');
+    src.close();
+    await copying;
+    await output.finalize();
+  } catch (e) {
+    await output.cancel().catch(() => {});
+    await copying.catch(() => {});
+    if (signal.aborted) throw new DOMException('Export cancelled', 'AbortError');
+    throw e;
+  }
+  logStats('burn + clean', stats, performance.now() - t0);
   const buf = (output.target as BufferTarget).buffer!;
   return { blob: new Blob([buf], { type: 'video/mp4' }), ext: 'mp4' };
 }
