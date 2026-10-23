@@ -12,6 +12,36 @@ export const DEFAULT_AMOUNT: Record<CleanKind, number> = { analog: 35, hdzero: 5
 
 export interface Box { x: number; y: number; w: number; h: number }
 
+/** Everything the clean pass can do to a cut. */
+export interface CleanOptions {
+  kind: CleanKind;
+  /** Colour calming (analog) or breakup detection (HDZero), 0..100. */
+  amount: number;
+  /** Multi-frame noise reduction (fusion), 0..100; 0 = off. */
+  denoise: number;
+  /** Remove the goggle OSD. */
+  osd: boolean;
+  /** Repair damaged frames only and leave undamaged ones bit-identical (with no calming). */
+  damageOnly: boolean;
+}
+
+/** OSD overlay of a cut: 0/255 mask and the guide of steady edge orientations (refined by the OSD port). */
+export interface OsdMask { mask: Plane; guide: Plane }
+
+/** Context frames needed on each side of a range for every stage of `o` together. */
+export function chainRadius(o: CleanOptions): number {
+  return RADIUS;
+}
+
+/**
+ * Run the stages of `o` on frames `from..to-1` (upstream order: colour or breakups → OSD → fusion);
+ * the other frames are context. Same size in, same size out.
+ */
+export function repairChain(o: CleanOptions, frames: Rgba[], from: number, to: number, ctx: { osd?: OsdMask } = {}): Rgba[] {
+  void ctx;
+  return repairFrames(o.kind, o.amount, frames, from, to); // placeholder: stages arrive with the repairs work
+}
+
 /** Repair frames `from..to-1` of `frames` (all the same size); neighbours outside the range are context only. */
 export function repairFrames(kind: CleanKind, amount: number, frames: Rgba[], from: number, to: number): Rgba[] {
   if (amount <= 0) return frames.slice(from, to);

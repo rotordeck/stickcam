@@ -5,6 +5,8 @@
 //   burn   – the user's video, cut to the trim range, with the overlay composited in (H.264 + original audio)
 import { ALL_FORMATS, BlobSource, BufferTarget, CanvasSource, Conversion, Input, Mp4OutputFormat, Output, QUALITY_HIGH, WebMOutputFormat, canEncodeVideo } from 'mediabunny';
 import { createScene, renderFrame, type Scene } from '../render/draw.ts';
+import type { CleanOptions } from '../clean/repair.ts';
+import type { VideoInfo } from '../video.ts';
 
 export type Format = 'webm' | 'mp4' | 'prores' | 'burn';
 
@@ -14,8 +16,10 @@ export interface ExportJob {
   background: string; // mp4 only
   onProgress: (done: number, total: number, phase: string) => void;
   signal: AbortSignal;
-  /** burn only: the source video and the cut, in video seconds. */
-  video?: { file: File; start: number; end: number };
+  /** burn only: the source video and the cut, in video seconds. `info` is the opened video (needed to clean while burning). */
+  video?: { file: File; start: number; end: number; info?: VideoInfo };
+  /** burn only: repair the DVR frames while burning (one decode, one encode). */
+  clean?: CleanOptions;
 }
 
 export interface ExportResult { blob: Blob; ext: string }
