@@ -10,7 +10,7 @@
 // (occlusion, flow errors) the current frame is kept, so fast motion does not ghost. A limited detail
 // lift follows; its overshoot is clipped to avoid halos. Chroma comes from the current frame only, it
 // is repaired earlier by the analog colour stage. Pure.
-import { denseFlow } from './flow.ts';
+import { denseFlow, type Flow } from './flow.ts';
 import { fromYcc, gaussianBlur, plane, remap, resizeArea, resizeLinear, round8, toYcc, type Plane, type Rgba } from './image.ts';
 
 export const RADIUS = 2;
@@ -51,18 +51,21 @@ function median(v: number[]): number {
   return n % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-/** Strength of the fusion: `calm` 0..1 (the desktop app's rauschminderung / 100), `lift` ≥ 0. */
-export interface Fusion { calm: number; lift: number }
+/**
+ * Strength of the fusion: `calm` 0..1 (the desktop app's rauschminderung / 100), `lift` ≥ 0.
+ * `flow` replaces the optical flow (the parity script fixes it to measure the rest alone).
+ */
+export interface Fusion { calm: number; lift: number; flow?: (from: Plane, to: Plane) => Flow }
 
 /** The fused frame for win[c]. */
-export function fuseWindow(win: LumaFrame[], c: number, { calm, lift }: Fusion): Rgba {
+export function fuseWindow(win: LumaFrame[], c: number, { calm, lift, flow = denseFlow }: Fusion): Rgba {
   const present = win[c], [Y, Cr, Cb] = present.ycc, { w, h } = Y, n = w * h;
   // Stronger calming accepts larger differences as noise and trusts the current frame less.
   const tolerance = 6 + 14 * calm, ownWeight = 1 + 3 * (1 - calm);
   const layers: Float32Array[] = [Y.d];
   win.forEach((other, k) => {
     if (k === c) return;
-    const f = denseFlow(present.small, other.small);
+    const f = flow(present.small, other.small);
     const fx = resizeLinear(plane(f.w, f.h, f.fx), w, h).d, fy = resizeLinear(plane(f.w, f.h, f.fy), w, h).d;
     const sx = w / present.small.w, sy = h / present.small.h, mx = new Float32Array(n), my = new Float32Array(n);
     for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) { mx[i] = x + fx[i] * sx; my[i] = y + fy[i] * sy; }

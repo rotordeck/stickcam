@@ -189,8 +189,12 @@ function align(present: ChromaFrame, other: ChromaFrame, ov: Plane): Aligned {
 
 /** A row lost its colour when its colour level is this much below the best neighbour's same row. */
 const LOST_ROW = 0.5;
-/** A frame is left alone in damage-only mode below all of these: share of lost rows, of tear pixels, of band pixels. */
-const DAMAGE = { dropout: 0.01, tears: 0.002, bands: 0.002 };
+/**
+ * A frame is left alone in damage-only mode below all of these: share of lost rows, of tear pixels,
+ * of band pixels. Real analog footage shows up to ~1 % band pixels in intact frames (picture content);
+ * damaged ones had 10 % and more.
+ */
+const DAMAGE = { dropout: 0.01, tears: 0.002, bands: 0.02 };
 
 export interface Damage { dropout: number; tears: number; bands: number }
 
