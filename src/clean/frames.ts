@@ -25,3 +25,24 @@ export function repairRange<F, P, R>(frames: F[], from: number, to: number, radi
   }
   return out;
 }
+
+/** One windowed stage of a chain: `run(frames, from, to)` returns frames[from..to-1] processed. */
+export interface Stage<F> { radius: number; run: (frames: F[], from: number, to: number) => F[] }
+
+/**
+ * Stages one after the other on frames `from..to-1`, as upstream chains its streams (restoration.py
+ * `_stages`): each stage reads the previous stage's output, never the raw input, so every stage runs
+ * over the range widened by the radii of the stages after it. Given that many context frames (the sum
+ * of all radii) on each side, the result equals running the chain over the whole stream.
+ */
+export function runChain<F>(stages: Stage<F>[], frames: F[], from: number, to: number): F[] {
+  let cur = frames, base = 0; // cur[i] is frame base + i
+  let later = stages.reduce((s, st) => s + st.radius, 0);
+  for (const st of stages) {
+    later -= st.radius;
+    const a = Math.max(0, from - later), b = Math.min(frames.length, to + later);
+    cur = st.run(cur, a - base, b - base);
+    base = a;
+  }
+  return cur.slice(from - base, to - base);
+}

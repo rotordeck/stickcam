@@ -1,9 +1,10 @@
 // Glue for the optional "Clean DVR" pass: which repair, the picture box inside black bars, and the
 // clock bookkeeping when the cleaned cut replaces the video. Pure (no DOM, no Mediabunny).
 import * as analog from './analog.ts';
-import { repairRange } from './frames.ts';
+import { repairRange, runChain, type Stage } from './frames.ts';
+import * as fuse from './fuse.ts';
 import * as hdzero from './hdzero.ts';
-import type { Plane, Rgba } from './image.ts';
+import { resizeArea, type Plane, type Rgba } from './image.ts';
 
 export type CleanKind = 'analog' | 'hdzero';
 export const RADIUS = Math.max(analog.RADIUS, hdzero.RADIUS);
@@ -28,18 +29,69 @@ export interface CleanOptions {
 /** OSD overlay of a cut: 0/255 mask and the guide of steady edge orientations (refined by the OSD port). */
 export interface OsdMask { mask: Plane; guide: Plane }
 
+/**
+ * The OSD removal stage (osd.ts). Wire it here, so the main thread's `chainRadius` and the workers'
+ * `repairChain` both see it:
+ *   const osdStage = { radius: osd.RADIUS, removeWindow: osd.removeWindow } as OsdStage | null;
+ * (with `import * as osd from './osd.ts'`). While null, `osd: true` is ignored.
+ */
+export interface OsdStage { radius: number; removeWindow: (win: Rgba[], centre: number, osd: OsdMask) => Rgba }
+const osdStage = null as OsdStage | null;
+
+/** Switches for measuring against the original; `adaptiveWindow` is our deviation in analog.ts (WIDE_RADIUS). */
+export const tuning = { adaptiveWindow: true };
+
+const analogRadius = () => (tuning.adaptiveWindow ? analog.WIDE_RADIUS : analog.RADIUS);
+
+/** The stages of `o` in upstream order (restoration.py `_stages`): colour or breakups → OSD → fusion. */
+function stages(o: CleanOptions, osdMask?: OsdMask): Stage<Rgba>[] {
+  const out: Stage<Rgba>[] = [];
+  if (o.amount > 0 && o.kind === 'analog') {
+    const opts = { wide: tuning.adaptiveWindow, damageOnly: o.damageOnly };
+    let overlay: Plane | undefined; // the OSD mask on the repair grid, as upstream hands it to the colour stage
+    out.push({
+      radius: analogRadius(),
+      run: (frames, from, to) => repairRange(frames, from, to, analogRadius(), (f) => new analog.ChromaFrame(f), (w, c) => {
+        if (osdMask && !overlay) {
+          const p = resizeArea(osdMask.mask, w[c].gw, w[c].gh);
+          for (let i = 0; i < p.d.length; i++) p.d[i] /= 255;
+          overlay = p;
+        }
+        return analog.repairWindow(w, c, o.amount, overlay, opts);
+      }),
+    });
+  }
+  if (o.amount > 0 && o.kind === 'hdzero') {
+    // Undamaged frames come back as the same object, before any flow, with or without damageOnly.
+    const threshold = hdzero.level(o.amount);
+    out.push({ radius: hdzero.RADIUS, run: (frames, from, to) => repairRange(frames, from, to, hdzero.RADIUS, (f) => new hdzero.BlockFrame(f), (w, c) => hdzero.repairWindow(w, c, threshold)) });
+  }
+  if (o.osd && osdStage && osdMask) {
+    const { radius, removeWindow } = osdStage;
+    out.push({ radius, run: (frames, from, to) => repairRange(frames, from, to, radius, (f) => f, (w, c) => removeWindow(w, c, osdMask)) });
+  }
+  if (o.denoise > 0) {
+    const fusion = { calm: o.denoise / 100, lift: fuse.LIFT };
+    out.push({ radius: fuse.RADIUS, run: (frames, from, to) => repairRange(frames, from, to, fuse.RADIUS, (f) => new fuse.LumaFrame(f), (w, c) => fuse.fuseWindow(w, c, fusion)) });
+  }
+  return out;
+}
+
 /** Context frames needed on each side of a range for every stage of `o` together. */
 export function chainRadius(o: CleanOptions): number {
-  return RADIUS;
+  const r = (o.amount > 0 ? (o.kind === 'analog' ? analogRadius() : hdzero.RADIUS) : 0)
+    + (o.osd && osdStage ? osdStage.radius : 0) + (o.denoise > 0 ? fuse.RADIUS : 0);
+  return r;
 }
 
 /**
  * Run the stages of `o` on frames `from..to-1` (upstream order: colour or breakups → OSD → fusion);
- * the other frames are context. Same size in, same size out.
+ * the other frames are context, and with `chainRadius(o)` of them on each side the result matches a
+ * run over the whole stream. Same size in, same size out. Frames no stage touched may come back as
+ * the same objects.
  */
 export function repairChain(o: CleanOptions, frames: Rgba[], from: number, to: number, ctx: { osd?: OsdMask } = {}): Rgba[] {
-  void ctx;
-  return repairFrames(o.kind, o.amount, frames, from, to); // placeholder: stages arrive with the repairs work
+  return runChain(stages(o, ctx.osd), frames, from, to);
 }
 
 /** Repair frames `from..to-1` of `frames` (all the same size); neighbours outside the range are context only. */

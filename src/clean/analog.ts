@@ -57,6 +57,7 @@ function hueTears(cr: Plane, cb: Plane): Plane {
 
 /** Per-frame data computed once and shared by every window it appears in. */
 export class ChromaFrame {
+  readonly frame: Rgba;
   readonly ycc: [Plane, Plane, Plane];
   readonly gw: number;
   readonly gh: number;
@@ -68,6 +69,7 @@ export class ChromaFrame {
   /** Colour level per row (gh values). */
   readonly colour: Float32Array;
   constructor(frame: Rgba) {
+    this.frame = frame;
     this.ycc = toYcc(frame);
     const { w, h } = frame;
     [this.gw, this.gh] = grid(w, h);
@@ -162,44 +164,110 @@ function followLuma(cr: Plane, cb: Plane, luma: Plane, amount: number): [Plane, 
   }) as [Plane, Plane];
 }
 
+interface Aligned { cr: Plane; cb: Plane; tears: Plane; colour: Plane; fit: Plane }
+
+/** `other` on `present`'s grid, per pixel from the warped or the unmoved frame, whichever fits the luma better. */
+function align(present: ChromaFrame, other: ChromaFrame, ov: Plane): Aligned {
+  const { gw: w, gh: h } = present, n = w * h;
+  const [luma, cr, cb, tears, colour] = warp(present, other);
+  const a: Aligned = { cr: plane(w, h), cb: plane(w, h), tears: plane(w, h), colour: plane(w, h), fit: plane(w, h) };
+  for (let i = 0; i < n; i++) {
+    const moved = Math.exp(-(((luma.d[i] - present.luma.d[i]) / LUMA_MATCH) ** 2));
+    // Static screen content (OSD, a still scene) matches best without motion.
+    const stillFit = Math.exp(-(((other.luma.d[i] - present.luma.d[i]) / LUMA_MATCH) ** 2));
+    const still = stillFit > moved;
+    a.cr.d[i] = still ? other.cr.d[i] : cr.d[i];
+    a.cb.d[i] = still ? other.cb.d[i] : cb.d[i];
+    a.tears.d[i] = (still ? other.tears.d[i] : tears.d[i]) * (1 - ov.d[i]);
+    a.colour.d[i] = still ? other.colour[(i / w) | 0] : colour.d[i];
+    a.fit.d[i] = Math.max(moved, stillFit);
+  }
+  return a;
+}
+
+// ---------- damage-only mode (not in the original) ----------
+
+/** A row lost its colour when its colour level is this much below the best neighbour's same row. */
+const LOST_ROW = 0.5;
+/** A frame is left alone in damage-only mode below all of these: share of lost rows, of tear pixels, of band pixels. */
+const DAMAGE = { dropout: 0.01, tears: 0.002, bands: 0.002 };
+
+export interface Damage { dropout: number; tears: number; bands: number }
+
+const maxOf = (planes: Plane[]) => {
+  const out = planes[0].d.slice();
+  for (const p of planes.slice(1)) for (let i = 0; i < out.length; i++) if (p.d[i] > out[i]) out[i] = p.d[i];
+  return plane(planes[0].w, planes[0].h, out);
+};
+
+/**
+ * How damaged win[c] looks, from per-frame data only (no optical flow), so an undamaged frame costs
+ * almost nothing: rows that lost the colour their ±RADIUS neighbours have, hue tears no unmoved
+ * neighbour has nearby, and unbacked bands. Each is a share of the frame.
+ */
+export function damage(win: ChromaFrame[], c: number, overlay?: Plane): Damage {
+  const present = win[c], { gw: w, gh: h } = present, n = w * h, ov = overlay?.d;
+  const near = win.filter((_, k) => k !== c && Math.abs(k - c) <= RADIUS);
+  let lost = 0;
+  for (let y = 0; y < h; y++) if (present.colour[y] < near.reduce((m, f) => Math.max(m, f.colour[y]), 0) - LOST_ROW) lost++;
+  // Without alignment, a picture edge that moved a little would look like a new tear: look around it.
+  const around = near.length ? dilate(maxOf(near.map((f) => f.tears)), 5, 5) : plane(w, h);
+  const bands = unbackedBands(present.cr, present.cb, present.luma);
+  let tears = 0, banded = 0;
+  for (let i = 0; i < n; i++) {
+    const keep = ov ? 1 - ov[i] : 1;
+    if (present.tears.d[i] * keep * (1 - around.d[i]) > 0.5) tears++;
+    if (bands.d[i] * keep > 0.5) banded++;
+  }
+  return { dropout: lost / h, tears: tears / n, bands: banded / n };
+}
+
+export const isDamaged = (d: Damage) => d.dropout > DAMAGE.dropout || d.tears > DAMAGE.tears || d.bands > DAMAGE.bands;
+
+// ---------- wider window (not in the original) ----------
+
+/**
+ * Deviation from the original: where the ±RADIUS neighbours together back a pixel's colour with less
+ * than WIDE_BACKING, it is re-estimated with frames out to ±WIDE_RADIUS before the grey fallback, so a
+ * dropout lasting several frames gets colour back instead of going grey. Off in `repairWindow` unless
+ * asked for (`wide`), which keeps parity measurable.
+ */
+export const WIDE_RADIUS = 6;
+const WIDE_BACKING = 0.5;
+/** Extra flows only pay off when at least this share of the grid lacks backing. */
+const WIDE_SHARE = 0.01;
+
+export interface RepairOptions {
+  /** Re-estimate weakly backed colour from frames out to ±WIDE_RADIUS (they must be in `win`). */
+  wide?: boolean;
+  /** Return win[c]'s own frame object, untouched, unless `damage` finds something to repair. */
+  damageOnly?: boolean;
+}
+
 /**
  * The repaired frame for win[c]. `overlay` marks OSD graphics on the repair grid (0..1); their
- * coloured bars are drawn, not received, and are never treated as hue tears.
+ * coloured bars are drawn, not received, and are never treated as hue tears. `win` may reach further
+ * than RADIUS; frames beyond it are used only by the `wide` re-estimate.
  */
-export function repairWindow(win: ChromaFrame[], c: number, amount: number, overlay?: Plane): Rgba {
+export function repairWindow(win: ChromaFrame[], c: number, amount: number, overlay?: Plane, opts: RepairOptions = {}): Rgba {
   const present = win[c], { gw: w, gh: h } = present, n = w * h;
+  // Before any flow: an undamaged frame is done here.
+  if (opts.damageOnly && !isDamaged(damage(win, c, overlay))) return present.frame;
   const ov = overlay ?? plane(w, h);
   const row = (f: ChromaFrame, i: number) => f.colour[(i / w) | 0];
-  interface Aligned { cr: Plane; cb: Plane; tears: Plane; colour: Plane; fit: Plane }
-  const aligned: Aligned[] = [];
-  win.forEach((other, k) => {
-    if (k === c) return;
-    const [luma, cr, cb, tears, colour] = warp(present, other);
-    const a: Aligned = { cr: plane(w, h), cb: plane(w, h), tears: plane(w, h), colour: plane(w, h), fit: plane(w, h) };
-    for (let i = 0; i < n; i++) {
-      const moved = Math.exp(-(((luma.d[i] - present.luma.d[i]) / LUMA_MATCH) ** 2));
-      // Static screen content (OSD, a still scene) matches best without motion.
-      const stillFit = Math.exp(-(((other.luma.d[i] - present.luma.d[i]) / LUMA_MATCH) ** 2));
-      const still = stillFit > moved;
-      a.cr.d[i] = still ? other.cr.d[i] : cr.d[i];
-      a.cb.d[i] = still ? other.cb.d[i] : cb.d[i];
-      a.tears.d[i] = (still ? other.tears.d[i] : tears.d[i]) * (1 - ov.d[i]);
-      a.colour.d[i] = still ? row(other, i) : colour.d[i];
-      a.fit.d[i] = Math.max(moved, stillFit);
-    }
-    aligned.push(a);
-  });
+  const aligned = win.flatMap((other, k) => (k === c || Math.abs(k - c) > RADIUS ? [] : [align(present, other, ov)]));
   // A hue tear is transient. An edge that shows the same jump in the aligned neighbours is part of
   // the picture (or a drawn bar), not a broken carrier.
   const lasting = each(w, h, (i) => (aligned.length ? aligned.reduce((s, a) => s + a.tears.d[i], 0) / aligned.length : 0));
   const ownTears = each(w, h, (i) => present.tears.d[i] * (1 - ov.d[i]) * (1 - lasting.d[i]));
-  const sCr = [present.cr, ...aligned.map((a) => a.cr)], sCb = [present.cb, ...aligned.map((a) => a.cb)];
   // A small floor keeps colour available for a dropout frame during fast motion, when no neighbour passes the luma check.
-  const weights = [each(w, h, (i) => row(present, i) * (1 - ownTears.d[i])),
-    ...aligned.map((a) => each(w, h, (i) => a.colour.d[i] * (1 - a.tears.d[i] * (1 - lasting.d[i])) * (a.fit.d[i] + 0.05)))];
-  const K = weights.length, eCr = plane(w, h), eCb = plane(w, h);
-  const strength = plane(w, h), goalCr = plane(w, h), goalCb = plane(w, h);
-  for (let i = 0; i < n; i++) {
+  const weigh = (a: Aligned) => each(w, h, (i) => a.colour.d[i] * (1 - a.tears.d[i] * (1 - lasting.d[i])) * (a.fit.d[i] + 0.05));
+  let sCr = [present.cr, ...aligned.map((a) => a.cr)], sCb = [present.cb, ...aligned.map((a) => a.cb)];
+  let weights = [each(w, h, (i) => row(present, i) * (1 - ownTears.d[i])), ...aligned.map(weigh)];
+  const eCr = plane(w, h), eCb = plane(w, h), backed = plane(w, h);
+  /** Weighted estimate of pixel i, then two Cauchy reweightings against outliers; sample 0 is the frame itself. */
+  const solve = (i: number) => {
+    const K = weights.length;
     let sw = 0, sr = 0, sb = 0, others = 0;
     for (let k = 0; k < K; k++) { const wt = weights[k].d[i]; sw += wt; sr += sCr[k].d[i] * wt; sb += sCb[k].d[i] * wt; if (k) others += wt; }
     let er = sr / Math.max(sw, 1e-3), eb = sb / Math.max(sw, 1e-3);
@@ -211,7 +279,30 @@ export function repairWindow(win: ChromaFrame[], c: number, amount: number, over
       }
       er = cr / Math.max(cw, 1e-3); eb = cb / Math.max(cw, 1e-3);
     }
-    eCr.d[i] = er; eCb.d[i] = eb;
+    eCr.d[i] = er; eCb.d[i] = eb; backed.d[i] = others;
+  };
+  for (let i = 0; i < n; i++) solve(i);
+  if (opts.wide) {
+    let short = 0;
+    for (let i = 0; i < n; i++) if (backed.d[i] < WIDE_BACKING) short++;
+    // A frame without any colour can't help, and a grey scene needs no extra flows.
+    const far = win.filter((f, k) => Math.abs(k - c) > RADIUS && Math.abs(k - c) <= WIDE_RADIUS && f.colour.some((v) => v > 0.05));
+    if (short >= WIDE_SHARE * n && far.length) {
+      // The colour level is smoothed over 5 rows, so the edge rows of a dropout band still count as
+      // coloured: take the band's edges in and the lowest level of those rows for every frame.
+      const needy = dilate(each(w, h, (i) => (backed.d[i] < WIDE_BACKING ? 1 : 0)), 1, 5);
+      const erode = (p: Plane) => { const m = dilate(each(w, h, (i) => -p.d[i]), 1, 5); return each(w, h, (i) => -m.d[i]); };
+      const extra = far.map((other) => align(present, other, ov));
+      sCr = [...sCr, ...extra.map((a) => a.cr)]; sCb = [...sCb, ...extra.map((a) => a.cb)];
+      const own = erode(each(w, h, (i) => row(present, i)));
+      weights = [each(w, h, (i) => own.d[i] * (1 - ownTears.d[i])),
+        ...[...aligned, ...extra].map((a) => weigh({ ...a, colour: erode(a.colour) }))];
+      for (let i = 0; i < n; i++) if (needy.d[i]) solve(i);
+    }
+  }
+  const strength = plane(w, h), goalCr = plane(w, h), goalCb = plane(w, h);
+  for (let i = 0; i < n; i++) {
+    const er = eCr.d[i], eb = eCb.d[i], others = backed.d[i];
     // Without usable neighbours the goal fades to neutral grey: a stripe is never copied into a frame
     // that lacks trustworthy colour.
     const backing = Math.min(others, 1);
