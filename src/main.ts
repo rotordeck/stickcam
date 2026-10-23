@@ -10,13 +10,14 @@ import { PRESETS, presetById, type Style } from './render/style.ts';
 import { DEFAULT_SETTINGS, SIZE_PRESETS, computeLayout, type Settings } from './render/layout.ts';
 import { createScene, renderFrame, type Scene } from './render/draw.ts';
 import { capabilities, runExport, type Format } from './export/export.ts';
-import { analyzeFlow, openVideo, type VideoInfo } from './video.ts';
+import { analyzeDamage, analyzeFlow, openVideo, type VideoInfo } from './video.ts';
 import { initFcDialog } from './fc/dialog.ts';
 import { FcLink, fcSupported, pullDataflash } from './fc/fc.ts';
 import { findOffset, type SyncResult } from './sync.ts';
 import { cleanCut, previewFrame } from './clean/clean.ts';
 import type { Rgba } from './clean/image.ts';
-import { DEFAULT_AMOUNT, toCleaned, toOriginal, type CleanKind } from './clean/repair.ts';
+import { DEFAULT_AMOUNT, guessKind, toCleaned, toOriginal, type CleanKind, type CleanOptions } from './clean/repair.ts';
+import { BREAK, breaksFor, guessFromScores, type Damage } from './clean/detect.ts';
 import {
   LOOK_SETTINGS, applyImport, defaultChoices, exportFile, findByName, loadPresets, lookEquals, newId, parseImport, planImport, sanitizeLook, savePresets,
   type ImportChoice, type ImportItem, type Look, type UserPreset,
@@ -51,9 +52,19 @@ const S = {
   clean: {
     kind: 'auto' as CleanKind | 'auto',
     amount: DEFAULT_AMOUNT.analog,
+    /** Multi-frame noise reduction 0..100 (0 = off). */
+    denoise: 0,
+    /** Remove the goggle OSD. */
+    osd: false,
+    /** Repair broken frames only; leave the others untouched. */
+    damageOnly: false,
+    /** Burn-in export: clean the frames on the way (one decode, one encode). */
+    burn: false,
     original: null as VideoInfo | null,
     cleaned: null as VideoInfo | null,
     shift: 0,
+    /** The cleaned clip was served from the clean pass's cache (when it reports `cached: true`). */
+    cached: false,
     /** The cut the clean was made from, restored on the way back if the trim wasn't touched. */
     cut: [0, 0] as [number, number],
   },
@@ -76,7 +87,7 @@ function status(msg: string, err = false) {
 
 function saveHash() {
   const { mode, size, gap, position, chaos, fps, offsetX, offsetY } = S.settings;
-  const st = { p: S.presetId, o: S.overrides, s: { mode, size, gap, position, chaos, fps, offsetX, offsetY }, z: S.sizeId, f: S.format, c: { k: S.clean.kind, a: S.clean.amount } };
+  const st = { p: S.presetId, o: S.overrides, s: { mode, size, gap, position, chaos, fps, offsetX, offsetY }, z: S.sizeId, f: S.format, c: { k: S.clean.kind, a: S.clean.amount, d: S.clean.denoise, o: S.clean.osd, x: S.clean.damageOnly, b: S.clean.burn } };
   history.replaceState(null, '', '#' + btoa(unescape(encodeURIComponent(JSON.stringify(st)))));
   markUserPresets(); // every look change ends up here
 }
@@ -89,7 +100,12 @@ function loadHash() {
     if (st.s) Object.assign(S.settings, st.s);
     if (st.z && SIZE_PRESETS.some((z) => z.id === st.z)) S.sizeId = st.z;
     if (st.f) S.format = st.f;
-    if (st.c && ['auto', 'analog', 'hdzero'].includes(st.c.k)) { S.clean.kind = st.c.k; S.clean.amount = Math.max(0, Math.min(100, +st.c.a || 0)); }
+    if (st.c && ['auto', 'analog', 'hdzero'].includes(st.c.k)) {
+      S.clean.kind = st.c.k; S.clean.amount = Math.max(0, Math.min(100, +st.c.a || 0));
+      // Added later: older hashes lack them and keep the defaults.
+      S.clean.denoise = Math.max(0, Math.min(100, +st.c.d || 0));
+      S.clean.osd = st.c.o === true; S.clean.damageOnly = st.c.x === true; S.clean.burn = st.c.b === true;
+    }
   } catch { /* ignore a bad hash */ }
 }
 
@@ -203,6 +219,36 @@ function rebuildCur() {
   renderThumbs();
 }
 
+/**
+ * The scene for the current cut, with the footage's breakup strength per output frame when a damage
+ * scan exists. Preview, export and the dev hook all build their scenes here, so they all carry it.
+ */
+function sceneFor(set: Settings, scale: number): Scene {
+  const sc = createScene(S.cur!.track, S.cur!.motion, style(), set, scale);
+  sc.breaks = currentBreaks();
+  return sc;
+}
+
+/** The damage scan that applies to what's on screen, and the shift from on-screen video time to its time. */
+function damageNow(): { d: Damage; shift: number } | null {
+  if (!S.video) return null;
+  // The cleaned clip starts at `shift` of the original: the signal broke up where the original shows it,
+  // even though the picture is repaired now.
+  if (S.video === S.clean.cleaned && S.clean.original?.damage) return { d: S.clean.original.damage, shift: S.clean.shift };
+  return S.video.damage ? { d: S.video.damage, shift: 0 } : null;
+}
+
+let breaksKey = '', breaksFrom: Damage | null = null, breaksVal: Float32Array | undefined;
+function currentBreaks(): Float32Array | undefined {
+  const dn = damageNow();
+  if (!dn || !S.cur) return undefined;
+  // Output frame i ↔ video time trim0 + i/fps (the clock); cached because the scene is rebuilt often.
+  const t0 = S.trim[0] + dn.shift, fps = S.settings.fps, n = S.cur.track.frames;
+  const key = `${dn.d.t.length}:${t0}:${fps}:${n}`;
+  if (key !== breaksKey || breaksFrom !== dn.d || !breaksVal) { breaksKey = key; breaksFrom = dn.d; breaksVal = breaksFor(dn.d.t, dn.d.s, t0, fps, n); }
+  return breaksVal;
+}
+
 function rebuildScene() {
   if (!S.cur) return;
   const set = outputSettings();
@@ -212,7 +258,7 @@ function rebuildScene() {
   const fit = Math.min((box.width - 16) / L.W, (box.height - 16) / L.H);
   // Display at the fitted size (small outputs scale up); render at device resolution, capped for speed.
   const scale = Math.min(fit * dpr, 2);
-  S.scene = createScene(S.cur.track, S.cur.motion, style(), set, scale);
+  S.scene = sceneFor(set, scale);
   preview.width = Math.round(L.W * scale);
   preview.height = Math.round(L.H * scale);
   const cssW = `${Math.floor(L.W * fit)}px`, cssH = `${Math.floor(L.H * fit)}px`;
@@ -300,6 +346,7 @@ $('play').onclick = () => setPlaying(!S.playing);
 addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement).closest('input, select, textarea')) return;
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!S.playing); }
+  if (e.code === 'KeyC' && !e.ctrlKey && !e.metaKey && !e.altKey) toggleCleaned();
   if (S.cur && (e.code === 'ArrowLeft' || e.code === 'ArrowRight')) {
     setPlaying(false);
     seekFrame(S.frame + (e.code === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 10 : 1));
@@ -333,6 +380,7 @@ function drawTimeline() {
     c.fillStyle = 'rgba(41,231,255,0.10)'; c.fillRect(0, h + 3, w, H - h - 6);
     c.fillStyle = 'rgba(41,231,255,0.55)'; c.font = '600 10px system-ui'; c.textBaseline = 'middle';
     c.fillText(`VIDEO ${fmtTime(S.video.duration)}`, 6, h + (H - h) / 2);
+    drawBreakups(c, w, h + 3, H - h - 6);
     // flight block
     c.fillStyle = dragging === 'shift' ? 'rgba(255,225,77,0.16)' : 'rgba(255,255,255,0.06)';
     c.fillRect(fx(0), 1, fx(ldur) - fx(0), h - 2);
@@ -367,6 +415,24 @@ function drawTimeline() {
   placeTrim();
   placeHead();
 }
+/** Breakup markers in the video lane: a tick per pixel column, as tall and as strong as the worst frame in it. */
+function drawBreakups(c: CanvasRenderingContext2D, w: number, top: number, lane: number) {
+  const dn = damageNow();
+  if (!dn) return;
+  const { t, s } = dn.d, col = new Float32Array(Math.ceil(w) + 1);
+  for (let k = 0; k < t.length; k++) {
+    if (s[k] < BREAK) continue;
+    const x = Math.floor(xOf(t[k] - dn.shift));
+    if (x >= 0 && x < col.length) col[x] = Math.max(col[x], s[k]);
+  }
+  for (let x = 0; x < col.length; x++) {
+    if (!col[x]) continue;
+    const hh = Math.max(3, lane * (0.35 + 0.65 * col[x]));
+    c.fillStyle = `rgba(255,61,242,${(0.45 + 0.5 * col[x]).toFixed(2)})`;
+    c.fillRect(x, top + lane - hh, 1.5, hh);
+  }
+}
+
 function placeTrim() {
   trimEl.style.left = `${xOf(S.trim[0])}px`;
   trimEl.style.width = `${Math.max(4, xOf(S.trim[1]) - xOf(S.trim[0]))}px`;
@@ -423,6 +489,7 @@ let syncAbort: AbortController | null = null;
 async function loadVideo(file: File) {
   setPlaying(false);
   syncAbort?.abort();
+  damageAbort?.abort();
   try {
     setSyncNote(`Opening ${file.name}…`);
     $('syncbar').hidden = false;
@@ -436,12 +503,15 @@ async function loadVideo(file: File) {
     S.trim = [0, v.duration];
     S.frame = 0;
     buildOutput();
-    if (!S.data) { setSyncNote('Video loaded. Now load the blackbox log for this flight.'); renderSyncBar(); return; }
+    if (!S.data) { setSyncNote('Video loaded. Now load the blackbox log for this flight.'); renderSyncBar(); void scanDamage(); return; }
     rebuildCur();
     drawTimeline();
     renderSyncBar();
-    if (S.bytes) await autoSync();
-    else setSyncNote('Load your own log (not the demo) to auto-sync. You can drag the flight lane to line it up by hand.');
+    if (S.bytes) await autoSync(); // its decode runs the damage scan too
+    else {
+      setSyncNote('Load your own log (not the demo) to auto-sync. You can drag the flight lane to line it up by hand.');
+      void scanDamage();
+    }
   } catch (e) {
     setSyncNote((e as Error).message, true);
   }
@@ -450,6 +520,7 @@ async function loadVideo(file: File) {
 function removeVideo() {
   setPlaying(false);
   syncAbort?.abort();
+  damageAbort?.abort();
   dropCleaned();
   if (S.video) URL.revokeObjectURL(S.video.url);
   S.video = null; S.offset = 0;
@@ -466,8 +537,11 @@ async function autoSync() {
   syncAbort?.abort();
   const ac = (syncAbort = new AbortController());
   const v = S.video;
+  damageAbort?.abort(); // the motion pass scans for breakups in the same decode
   try {
+    const hadDamage = !!v.damage;
     const flow = await analyzeFlow(v, (t) => setSyncNote(`Reading video motion… ${Math.round((t / v.duration) * 100)}%`), ac.signal);
+    if (!hadDamage && v.damage) damageArrived();
     setSyncNote('Matching against the gyro…');
     await new Promise((r) => setTimeout(r, 0));
     let best: { idx: number; res: SyncResult } | null = null;
@@ -492,6 +566,67 @@ async function autoSync() {
   } catch (e) {
     if ((e as Error).name !== 'AbortError') setSyncNote(`Auto-sync failed: ${(e as Error).message}`, true);
   }
+}
+
+// ---------- breakup scan ----------
+
+let damageAbort: AbortController | null = null;
+let damageNote = '';
+
+/** Scan the video on screen for breakups (cheap: small frames), unless it already was. */
+async function scanDamage(v = S.video): Promise<Damage | undefined> {
+  if (!v) return undefined;
+  if (v.damage) return v.damage;
+  damageAbort?.abort();
+  const ac = (damageAbort = new AbortController());
+  try {
+    await analyzeDamage(v, (t) => setDamageNote(`scanning for breakups ${Math.round((t / v.duration) * 100)} %`), ac.signal);
+    damageArrived();
+    return v.damage;
+  } catch (e) {
+    if ((e as Error).name !== 'AbortError') setDamageNote(`breakup scan failed: ${(e as Error).message}`);
+    return undefined;
+  } finally {
+    if (damageAbort === ac) damageAbort = null;
+  }
+}
+
+function setDamageNote(msg: string) {
+  damageNote = msg;
+  const el = document.getElementById('cleanScan');
+  if (el) el.textContent = msg;
+}
+
+function damageArrived() {
+  damageNote = '';
+  rebuildScene(); drawTimeline(); renderCleanBar();
+}
+
+/** Auto's verdict from the scan of the original video, when there is one. */
+function autoGuess(): { kind: CleanKind; clean: boolean } | null {
+  const v = S.clean.original ?? S.video, d = v?.damage;
+  return v && d ? guessFromScores(d.raw, v.width, v.height, d.box) : null;
+}
+
+/** Number of separate breakups (frames above BREAK, merged when less than ~0.2 s apart). */
+function breakupCount(d: Damage): number {
+  let n = 0, last = -Infinity;
+  for (let k = 0; k < d.t.length; k++) if (d.s[k] >= BREAK) { if (d.t[k] - last > 0.2) n++; last = d.t[k]; }
+  return n;
+}
+
+/** The kind to clean with: the user's pick, else the scan's guess, else the picture shape. */
+function cleanKind(): CleanKind {
+  if (S.clean.kind !== 'auto') return S.clean.kind;
+  const g = autoGuess();
+  if (g) return g.kind;
+  const v = S.clean.original ?? S.video!;
+  return guessKind(v.width, v.height, { x: 0, y: 0, w: v.width, h: v.height });
+}
+
+/** The full clean options for the clean pass and for cleaning while burning. */
+function cleanOptions(): CleanOptions {
+  return { kind: cleanKind(), amount: S.clean.amount, denoise: S.clean.denoise, osd: S.clean.osd, damageOnly: S.clean.damageOnly };
 }
 
 const decoded = new Map<number, FlightData>();
@@ -560,7 +695,7 @@ function showVideo(v: VideoInfo) {
   S.video = v;
   vid.src = v.url;
   S.frame = 0;
-  rebuildCur(); drawTimeline(); renderSyncBar();
+  rebuildCur(); drawTimeline(); renderSyncBar(); buildOutput();
 }
 
 function useCleaned() {
@@ -582,6 +717,19 @@ function useOriginal() {
   setSyncNote('Showing the original video.');
 }
 
+/** C: swap original ↔ cleaned at the same log time, playing on if it was playing. */
+function toggleCleaned() {
+  const { original, cleaned } = S.clean;
+  if (!original || !cleaned || !S.video || !S.cur) return;
+  const wasPlaying = S.playing, fps = S.settings.fps;
+  const logT = S.trim[0] + S.frame / fps + S.offset;
+  if (S.video === cleaned) useOriginal(); else useCleaned();
+  // The swap shifts offset and trim; the same log time is this video time now.
+  const i = Math.round((logT - S.offset - S.trim[0]) * fps);
+  seekFrame(i);
+  if (wasPlaying) setPlaying(true);
+}
+
 function renderCleanBar() {
   const el = $('cleanCtl');
   el.innerHTML = '';
@@ -597,9 +745,20 @@ function renderCleanBar() {
   for (const [v, l] of [['auto', 'Auto'], ['analog', 'Analog colour'], ['hdzero', 'HDZero breakups']]) kind.add(new Option(l, v, false, v === S.clean.kind));
   kind.onchange = () => {
     S.clean.kind = kind.value as CleanKind | 'auto';
-    S.clean.amount = DEFAULT_AMOUNT[S.clean.kind === 'hdzero' ? 'hdzero' : 'analog'];
+    S.clean.amount = DEFAULT_AMOUNT[cleanKind()];
     renderCleanBar(); saveHash();
   };
+  // What the breakup scan found (or how far it got).
+  const note = document.createElement('span');
+  note.id = 'cleanScan'; note.className = 'clean-note';
+  const d = damageNow()?.d, g = autoGuess();
+  if (damageNote) note.textContent = damageNote;
+  else if (d && g) {
+    const n = breakupCount(d), auto = S.clean.kind === 'auto' ? `Auto: ${g.kind === 'analog' ? 'analog' : 'HDZero'} · ` : '';
+    note.textContent = g.clean ? `${auto}Looks clean — nothing to fix` : `${auto}${n} breakup${n === 1 ? '' : 's'} found`;
+    note.classList.toggle('ok', g.clean);
+    note.title = 'From a quick scan of every frame; the pink ticks in the video lane mark them. Cleaning stays available either way.';
+  }
   const amt = document.createElement('input');
   amt.type = 'range'; amt.min = '0'; amt.max = '100'; amt.value = String(S.clean.amount);
   amt.title = S.clean.kind === 'hdzero' ? 'Breakup detection: higher finds more' : 'Colour calming: higher smooths colour more (0 = off)';
@@ -610,17 +769,38 @@ function renderCleanBar() {
   const mk = (label: string, tip: string, fn: () => void) => {
     const b = document.createElement('button'); b.textContent = label; b.title = tip; b.onclick = fn; return b;
   };
-  el.append(title, kind, amt, val);
+  // Denoise and the two switches travel with the clean options (clean pass and clean-while-burning).
+  const dn = document.createElement('label');
+  dn.className = 'clean-opt'; dn.title = 'Multi-frame noise reduction (0 = off)';
+  const dnIn = document.createElement('input');
+  dnIn.type = 'range'; dnIn.min = '0'; dnIn.max = '100'; dnIn.value = String(S.clean.denoise);
+  const dnVal = document.createElement('output'); dnVal.textContent = String(S.clean.denoise);
+  dnIn.oninput = () => { S.clean.denoise = +dnIn.value; dnVal.textContent = dnIn.value; };
+  dnIn.onchange = () => { saveHash(); if (cmpOpen) void openCompare(); };
+  dn.append('Denoise', dnIn, dnVal);
+  const flag = (label: string, tip: string, key: 'osd' | 'damageOnly') => {
+    const l = document.createElement('label');
+    l.className = 'clean-opt'; l.title = tip;
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = S.clean[key];
+    cb.onchange = () => { S.clean[key] = cb.checked; saveHash(); if (cmpOpen) void openCompare(); };
+    l.append(cb, label);
+    return l;
+  };
+  el.append(title, kind, amt, val, dn,
+    flag('Remove OSD', 'Remove the goggle OSD (text and icons) from the picture', 'osd'),
+    flag('Damage only', 'Repair broken frames only and leave the others exactly as they are', 'damageOnly'));
   if (!using) {
     el.append(mk(cmpOpen ? 'Close check' : 'Check frame', 'Before / after of the current frame (drag across the picture)', () => (cmpOpen ? closeCompare() : void openCompare())));
     el.append(mk('Clean cut', 'Repair every frame of the current cut and use the result (takes a while; runs on all cores)', () => void runClean()));
   }
   if (S.clean.cleaned) {
-    el.append(mk(using ? 'Use original' : 'Use cleaned', using ? 'Back to the original video' : 'Switch to the cleaned clip', using ? useOriginal : useCleaned));
+    el.append(mk(using ? 'Use original' : 'Use cleaned', `${using ? 'Back to the original video' : 'Switch to the cleaned clip'} (C)`, using ? useOriginal : useCleaned));
     const a = document.createElement('a');
     a.className = 'btn'; a.textContent = 'Save cleaned'; a.href = S.clean.cleaned.url; a.download = S.clean.cleaned.file.name;
     el.append(a);
+    if (S.clean.cached) { const c = document.createElement('span'); c.className = 'clean-note'; c.textContent = 'from cache'; c.title = 'This cut was cleaned before with the same settings'; el.append(c); }
   }
+  el.append(note);
 }
 
 // Before / after check: the current frame through the repair, split by a draggable line.
@@ -649,7 +829,7 @@ async function openCompare() {
   setSyncNote('Cleaning this frame…');
   try {
     const t0 = performance.now();
-    const res = await previewFrame(v, t, S.clean.kind, S.clean.amount);
+    const res = await previewFrame(v, t, S.clean.kind === 'auto' && !autoGuess() ? 'auto' : cleanKind(), S.clean.amount);
     const img = (f: Rgba) => new ImageData(new Uint8ClampedArray(f.d), f.w, f.h);
     cmp.width = v.width; cmp.height = v.height;
     cmpImgs = { before: img(res.before), after: img(res.after) };
@@ -680,10 +860,16 @@ async function cleanCurrentCut(signal: AbortSignal, onProgress: (done: number, t
   if (S.video !== original) useOriginal();
   const [start, end] = S.trim;
   const t0 = performance.now();
-  const res = await cleanCut({ video: original, start, end, kind: S.clean.kind, amount: S.clean.amount, signal, onProgress });
+  // Auto: the breakup scan's guess when there is one, else clean.ts guesses from the picture shape.
+  const o = cleanOptions();
+  // The full options ride along as extra fields: clean.ts reads denoise / osd / damageOnly once its
+  // CleanJob has them (an object variable, not a literal, so today's narrower type still accepts it).
+  const job = { ...o, kind: S.clean.kind === 'auto' && !autoGuess() ? ('auto' as const) : o.kind, video: original, start, end, signal, onProgress };
+  const res = await cleanCut(job);
   const clip = await openVideo(res.file);
   if (S.clean.cleaned) URL.revokeObjectURL(S.clean.cleaned.url);
   S.clean.original = original; S.clean.cleaned = clip; S.clean.shift = start; S.clean.cut = [start, end];
+  S.clean.cached = (res as { cached?: boolean }).cached === true;
   closeCompare();
   useCleaned();
   return { ...res, ms: Math.round(performance.now() - t0), clip };
@@ -712,7 +898,8 @@ async function runClean() {
     save.hidden = false;
     $('exTitle').textContent = 'Cleaned';
     const bars = res.box.w < res.clip.width || res.box.h < res.clip.height ? ` · picture ${res.box.w}×${res.box.h} inside bars` : '';
-    $('exPhase').textContent = `${res.kind === 'analog' ? 'Analog colour' : 'HDZero breakups'} · ${res.frames} frames · ${(res.ms / 1000).toFixed(1)} s${bars}${res.audio ? ' · audio copied' : ''}. The cleaned clip is now in use.`;
+    const cached = S.clean.cached ? ' · from cache' : '';
+    $('exPhase').textContent = `${res.kind === 'analog' ? 'Analog colour' : 'HDZero breakups'} · ${res.frames} frames · ${(res.ms / 1000).toFixed(1)} s${bars}${res.audio ? ' · audio copied' : ''}${cached}. The cleaned clip is now in use (C switches back and forth).`;
     $('exCancel').textContent = 'Close';
   } catch (e) {
     if ((e as Error).name === 'AbortError') { dlg.close(); return; }
@@ -1001,6 +1188,7 @@ const STYLE_SLIDERS: Num[] = [
   { label: 'Scanlines', key: 'scan', min: 0, max: 1, step: 0.05 },
   { label: 'RGB split', key: 'chroma', min: 0, max: 0.2, step: 0.005 },
   { label: 'Glitch', key: 'glitch', min: 0, max: 2, step: 0.05 },
+  { label: 'Signal glitch', key: 'signalGlitch', min: 0, max: 1, step: 0.05 },
   { label: 'Dot size', key: 'dotR', min: 0.05, max: 0.3, step: 0.005 },
 ];
 
@@ -1115,6 +1303,17 @@ function buildOutput() {
   ];
   if (S.video) formats.unshift(['burn', 'Cut video + sticks burned in (MP4)']);
   el.append(select('Format', S.format, formats, (v) => { S.format = v as OutFormat; buildOutput(); updateHint(); saveHash(); }));
+  if (S.format === 'burn' && S.video) {
+    const tg = document.createElement('div'); tg.className = 'toggles';
+    const lab = document.createElement('label');
+    const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = S.clean.burn && !usingCleaned();
+    inp.disabled = usingCleaned();
+    lab.title = usingCleaned() ? 'The cleaned clip is already in use' : 'Repair the DVR frames on the way, with the Clean DVR settings above (one decode, one encode; slower)';
+    inp.onchange = () => { S.clean.burn = inp.checked; saveHash(); };
+    lab.append(inp, document.createTextNode('Clean while burning'));
+    tg.append(lab);
+    el.append(tg);
+  }
 }
 
 const HINTS: Record<OutFormat, string> = {
@@ -1152,7 +1351,7 @@ $('export').onclick = async () => {
   setPlaying(false);
   const burn = S.format === 'burn' && !!S.video;
   const set = burn ? { ...S.settings, crop: false, width: S.video!.width, height: S.video!.height } : outputSettings();
-  const scene = createScene(S.cur.track, S.cur.motion, style(), set, 1);
+  const scene = sceneFor(set, 1);
   const format: Format = S.format.startsWith('mp4') ? 'mp4' : (S.format as Format);
   abort = new AbortController();
   const save = $<HTMLAnchorElement>('exSave');
@@ -1164,9 +1363,11 @@ $('export').onclick = async () => {
   dlg.showModal();
   const t0 = performance.now();
   try {
+    const clean = burn ? await burnClean((m) => { $('exPhase').textContent = m; }) : undefined;
     const res = await runExport({
       scene, format, background: S.format === 'mp4-green' ? '#00b140' : '#000000', signal: abort.signal,
-      video: burn ? { file: S.video!.file, start: S.trim[0], end: S.trim[1] } : undefined,
+      video: burn ? { file: S.video!.file, start: S.trim[0], end: S.trim[1], info: S.video! } : undefined,
+      clean,
       onProgress: (done, total, phase) => {
         bar.value = done / total;
         const el = (performance.now() - t0) / 1000;
@@ -1197,6 +1398,14 @@ $('export').onclick = async () => {
     abort = null;
   }
 };
+/** Clean options for a burn-in, when "Clean while burning" is on (Auto first finishes the breakup scan). */
+async function burnClean(say: (msg: string) => void, on = S.clean.burn): Promise<CleanOptions | undefined> {
+  if (!on || !S.video || usingCleaned()) return undefined;
+  if (S.clean.kind === 'auto' && !S.video.damage) { say('Scanning for breakups (Auto)…'); await scanDamage(); }
+  return cleanOptions();
+}
+const usingCleaned = () => !!S.clean.cleaned && S.video === S.clean.cleaned;
+
 $('exCancel').onclick = () => { if (abort) abort.abort(); else dlg.close(); };
 
 // ---------- inputs ----------
@@ -1304,15 +1513,16 @@ if (import.meta.env.DEV) {
   Object.assign(window, {
     __stickcam: {
       S,
-      async exportTo(fmt: OutFormat, name: string) {
+      async exportTo(fmt: OutFormat, name: string, cleanWhileBurning = false) {
         const burn = fmt === 'burn' && !!S.video;
         const set = burn ? { ...S.settings, crop: false, width: S.video!.width, height: S.video!.height } : outputSettings();
-        const scene = createScene(S.cur!.track, S.cur!.motion, style(), set, 1);
+        const scene = sceneFor(set, 1);
         const t0 = performance.now();
         const res = await runExport({
           scene, format: fmt.startsWith('mp4') ? 'mp4' : (fmt as Format), background: fmt === 'mp4-green' ? '#00b140' : '#000000',
           signal: new AbortController().signal, onProgress: () => {},
-          video: burn ? { file: S.video!.file, start: S.trim[0], end: S.trim[1] } : undefined,
+          video: burn ? { file: S.video!.file, start: S.trim[0], end: S.trim[1], info: S.video! } : undefined,
+          clean: burn ? await burnClean(() => {}, cleanWhileBurning) : undefined,
         });
         await fetch(`/__dev/save?name=${encodeURIComponent(name)}.${res.ext}`, { method: 'POST', body: res.blob });
         return { bytes: res.blob.size, ms: Math.round(performance.now() - t0), frames: S.cur!.track.frames };
@@ -1327,7 +1537,14 @@ if (import.meta.env.DEV) {
         const res = await cleanCurrentCut(new AbortController().signal, () => {});
         return { kind: res.kind, box: res.box, frames: res.frames, audio: res.audio, ms: res.ms, bytes: res.file.size, offset: S.offset, trim: S.trim };
       },
-      useOriginal, useCleaned,
+      useOriginal, useCleaned, toggleCleaned,
+      async scanDamage() {
+        const t0 = performance.now(), d = await scanDamage();
+        if (!d) return null;
+        return { frames: d.t.length, ms: Math.round(performance.now() - t0), breakups: breakupCount(d), box: d.box, guess: autoGuess(),
+          top: [...d.s.keys()].filter((k) => d.s[k] >= 0.8).map((k) => +d.t[k].toFixed(2)) };
+      },
+      breaks: () => S.scene?.breaks,
       set(p: { preset?: string; size?: string; fps?: number }) {
         if (p.preset) { S.presetId = p.preset; S.overrides = {}; }
         if (p.size) S.sizeId = p.size;
