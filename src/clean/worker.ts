@@ -3,6 +3,7 @@
 // main thread, and closed at once so the decoder never waits on them. A chunk carries chainRadius
 // context frames on either side, so chunks are independent of each other.
 import type { Rgba } from './image.ts';
+import type { OsdState } from './osd.ts';
 import { paste, repairChain, type Box, type CleanOptions, type OsdMask } from './repair.ts';
 
 export type ToWorker =
@@ -10,7 +11,7 @@ export type ToWorker =
   /** Frame `index` of the decode, needed by `refs` chunks on this worker. */
   | { type: 'frame'; index: number; refs: number; frame: VideoFrame }
   /** All frames lo..hi-1 are here: repair from..to-1. */
-  | { type: 'go'; chunk: number; lo: number; from: number; to: number; hi: number }
+  | { type: 'go'; chunk: number; lo: number; from: number; to: number; hi: number; osdState?: OsdState }
   /** A chunk that ended up with nothing to repair: just let go of its frames. */
   | { type: 'drop'; lo: number; hi: number };
 export type FromWorker =
@@ -40,7 +41,7 @@ function repairChunk(m: Extract<ToWorker, { type: 'go' }>) {
       if (!f) throw new Error(`Clean worker: frame ${i} missing`);
       win.push(f.f);
     }
-    const res = repairChain(opts, win, m.from - m.lo, m.to - m.lo, { osd }).map((f) => paste(f, box, w, h).d.buffer as ArrayBuffer);
+    const res = repairChain(opts, win, m.from - m.lo, m.to - m.lo, { osd, osdState: m.osdState }).map((f) => paste(f, box, w, h).d.buffer as ArrayBuffer);
     release(m.lo, m.hi);
     // A stage may hand an input back untouched (strength 0, damage-only): copy buffers that another
     // chunk here still reads, or that appear twice, instead of transferring them away.

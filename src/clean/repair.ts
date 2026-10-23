@@ -4,6 +4,7 @@ import * as analog from './analog.ts';
 import { repairRange, runChain, type Stage } from './frames.ts';
 import * as fuse from './fuse.ts';
 import * as hdzero from './hdzero.ts';
+import * as osd from './osd.ts';
 import { resizeArea, type Plane, type Rgba } from './image.ts';
 
 export type CleanKind = 'analog' | 'hdzero';
@@ -29,14 +30,12 @@ export interface CleanOptions {
 /** OSD overlay of a cut: 0/255 mask and the guide of steady edge orientations (refined by the OSD port). */
 export interface OsdMask { mask: Plane; guide: Plane }
 
-/**
- * The OSD removal stage (osd.ts). Wire it here, so the main thread's `chainRadius` and the workers'
- * `repairChain` both see it:
- *   const osdStage = { radius: osd.RADIUS, removeWindow: osd.removeWindow } as OsdStage | null;
- * (with `import * as osd from './osd.ts'`). While null, `osd: true` is ignored.
- */
-export interface OsdStage { radius: number; removeWindow: (win: Rgba[], centre: number, osd: OsdMask) => Rgba }
-const osdStage = null as OsdStage | null;
+/** What the OSD stage needs besides the frames: the cut's mask, and the stream history before the frames it gets. */
+export interface OsdContext {
+  osd?: OsdMask;
+  /** From an `OsdTrack` fed with every earlier frame, at the index `osdInputStart` names. */
+  osdState?: osd.OsdState;
+}
 
 /** Switches for measuring against the original; `adaptiveWindow` is our deviation in analog.ts (WIDE_RADIUS). */
 export const tuning = { adaptiveWindow: true };
@@ -44,7 +43,7 @@ export const tuning = { adaptiveWindow: true };
 const analogRadius = () => (tuning.adaptiveWindow ? analog.WIDE_RADIUS : analog.RADIUS);
 
 /** The stages of `o` in upstream order (restoration.py `_stages`): colour or breakups → OSD → fusion. */
-function stages(o: CleanOptions, osdMask?: OsdMask): Stage<Rgba>[] {
+function stages(o: CleanOptions, osdMask?: OsdMask, osdState?: osd.OsdState): Stage<Rgba>[] {
   const out: Stage<Rgba>[] = [];
   if (o.amount > 0 && o.kind === 'analog') {
     const opts = { wide: tuning.adaptiveWindow, damageOnly: o.damageOnly };
@@ -66,9 +65,10 @@ function stages(o: CleanOptions, osdMask?: OsdMask): Stage<Rgba>[] {
     const threshold = hdzero.level(o.amount);
     out.push({ radius: hdzero.RADIUS, run: (frames, from, to) => repairRange(frames, from, to, hdzero.RADIUS, (f) => new hdzero.BlockFrame(f), (w, c) => hdzero.repairWindow(w, c, threshold)) });
   }
-  if (o.osd && osdStage && osdMask) {
-    const { radius, removeWindow } = osdStage;
-    out.push({ radius, run: (frames, from, to) => repairRange(frames, from, to, radius, (f) => f, (w, c) => removeWindow(w, c, osdMask)) });
+  if (o.osd && osdMask) {
+    // A range stage, not a window one: whether an element is on screen depends on frames up to
+    // osd.HOLD back, which come in as `osdState`.
+    out.push({ radius: osd.RADIUS, run: (frames, from, to) => osd.removeRange(frames, from, to, osdMask, osdState) });
   }
   if (o.denoise > 0) {
     const fusion = { calm: o.denoise / 100, lift: fuse.LIFT };
@@ -80,7 +80,7 @@ function stages(o: CleanOptions, osdMask?: OsdMask): Stage<Rgba>[] {
 /** Context frames needed on each side of a range for every stage of `o` together. */
 export function chainRadius(o: CleanOptions): number {
   const r = (o.amount > 0 ? (o.kind === 'analog' ? analogRadius() : hdzero.RADIUS) : 0)
-    + (o.osd && osdStage ? osdStage.radius : 0) + (o.denoise > 0 ? fuse.RADIUS : 0);
+    + (o.osd ? osd.RADIUS : 0) + (o.denoise > 0 ? fuse.RADIUS : 0);
   return r;
 }
 
@@ -90,8 +90,8 @@ export function chainRadius(o: CleanOptions): number {
  * run over the whole stream. Same size in, same size out. Frames no stage touched may come back as
  * the same objects.
  */
-export function repairChain(o: CleanOptions, frames: Rgba[], from: number, to: number, ctx: { osd?: OsdMask } = {}): Rgba[] {
-  return runChain(stages(o, ctx.osd), frames, from, to);
+export function repairChain(o: CleanOptions, frames: Rgba[], from: number, to: number, ctx: OsdContext = {}): Rgba[] {
+  return runChain(stages(o, ctx.osd, ctx.osdState), frames, from, to);
 }
 
 /** Repair frames `from..to-1` of `frames` (all the same size); neighbours outside the range are context only. */
@@ -167,4 +167,13 @@ export function toCleaned(offset: number, trim: [number, number]): { offset: num
 /** And back: `shift` is the cut start the clean was made with. */
 export function toOriginal(offset: number, trim: [number, number], shift: number): { offset: number; trim: [number, number] } {
   return { offset: offset - shift, trim: [trim[0] + shift, trim[1] + shift] };
+}
+
+/**
+ * Index into a chain's input of the first frame the OSD stage receives: runChain hands it the colour or
+ * breakup stage's output, which starts where that stage's widened range starts (or the input itself
+ * when that stage is off). The caller's `OsdTrack.state` must be taken at this frame.
+ */
+export function osdInputStart(o: CleanOptions, from: number): number {
+  return o.amount > 0 ? Math.max(0, from - osd.RADIUS - (o.denoise > 0 ? fuse.RADIUS : 0)) : 0;
 }

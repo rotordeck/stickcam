@@ -1,7 +1,7 @@
 // The user's FPV video: metadata for the export, and the passes over its frames: the motion pass that
 // feeds auto-sync and the damage scan that finds breakups. Both read small canvases, so one decode
 // serves them together.
-import { ALL_FORMATS, BlobSource, CanvasSink, Input, VideoSampleSink, type InputVideoTrack, type VideoSample } from 'mediabunny';
+import { ALL_FORMATS, BlobSource, Input, VideoSampleSink, type InputVideoTrack, type VideoSample } from 'mediabunny';
 import { FLOW_H, FLOW_W, FlowEstimator, type FlowSample } from './sync.ts';
 import { SCAN_H, SCAN_W, breakups, scoreFrame, type Damage, type FrameScore } from './clean/detect.ts';
 import { pictureBox } from './clean/repair.ts';
@@ -49,25 +49,16 @@ export async function openVideo(file: File): Promise<VideoInfo> {
 // ---------- one decode, several small views ----------
 
 type Rotation = 0 | 90 | 180 | 270;
-interface View { w: number; h: number; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D; fresh: boolean }
-type MipDraw = (c: OffscreenCanvas, x: OffscreenCanvasRenderingContext2D,
-  o: { fit: 'fill'; rotation: Rotation; flip: boolean; crop: undefined; targetIsFresh: boolean; fillBlack: boolean }) => void;
-
+interface View { w: number; h: number; canvas: OffscreenCanvas; ctx: OffscreenCanvasRenderingContext2D }
 function view(w: number, h: number): View {
   const canvas = new OffscreenCanvas(w, h);
-  return { w, h, canvas, ctx: canvas.getContext('2d', { alpha: false, willReadFrequently: true })!, fresh: true };
+  return { w, h, canvas, ctx: canvas.getContext('2d', { alpha: false, willReadFrequently: true })! };
 }
 
-/**
- * Draw a sample into a small view the way CanvasSink({fit:'fill'}) does: it mip-maps big downscales
- * through VideoSample's internal `_drawWithFitAndMipmapping`, so the motion pass sees the same pixels
- * as on its own CanvasSink. Falls back to the public drawWithFit should that internal ever go away.
- */
+/** Draw a sample into a small view, stretched like CanvasSink({fit:'fill'}), with the browser's best downscaling. */
 function drawSmall(s: VideoSample, v: View, rotation: Rotation, flip: boolean) {
-  const mip = (s as unknown as { _drawWithFitAndMipmapping?: MipDraw })._drawWithFitAndMipmapping;
-  if (typeof mip === 'function') mip.call(s, v.canvas, v.ctx, { fit: 'fill', rotation, flip, crop: undefined, targetIsFresh: v.fresh, fillBlack: false });
-  else { v.ctx.imageSmoothingQuality = 'high'; s.drawWithFit(v.ctx, { fit: 'fill', rotation, flip }); }
-  v.fresh = false;
+  v.ctx.imageSmoothingQuality = 'high';
+  s.drawWithFit(v.ctx, { fit: 'fill', rotation, flip });
 }
 
 const cancelled = () => new DOMException('Cancelled', 'AbortError');
@@ -130,19 +121,4 @@ export async function analyzeDamage(v: VideoInfo, onProgress: (t: number) => voi
   if (v.damage) return v.damage;
   await scan(v, { flow: false, damage: true }, onProgress, signal);
   return v.damage!;
-}
-
-/** The motion pass on its own CanvasSink, as before the merge (dev check that the merged pass matches). */
-export async function analyzeFlowOnly(v: VideoInfo, signal: AbortSignal): Promise<FlowSample[]> {
-  const sink = new CanvasSink(v.track, { width: FLOW_W, height: FLOW_H, fit: 'fill', poolSize: 2 });
-  const est = new FlowEstimator();
-  const gray = new Uint8Array(FLOW_W * FLOW_H);
-  for await (const { canvas, timestamp } of sink.canvases()) {
-    if (signal.aborted) throw cancelled();
-    const ctx = (canvas as OffscreenCanvas).getContext('2d', { willReadFrequently: true }) as OffscreenCanvasRenderingContext2D;
-    const px = ctx.getImageData(0, 0, FLOW_W, FLOW_H).data;
-    for (let i = 0, j = 0; i < gray.length; i++, j += 4) gray[i] = (px[j] * 77 + px[j + 1] * 150 + px[j + 2] * 29) >> 8;
-    est.push(gray, timestamp - v.first);
-  }
-  return est.samples;
 }

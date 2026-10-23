@@ -6,3 +6,6 @@ dist
 /*.mp4
 /*.webm
 /*.mov
+
+# Claude Code agent worktrees
+.claude/worktrees/

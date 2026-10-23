@@ -187,3 +187,24 @@ describe('a static scene', () => {
     expect(masked(box)).toBeGreaterThan(300);
   });
 });
+
+describe('in the clean chain', () => {
+  it('chunked with tracker state equals one pass over the whole stream', async () => {
+    const { chainRadius, osdInputStart, repairChain } = await import('../src/clean/repair.ts');
+    // A warning that blinks on for a few frames, so the hold-over history matters across chunks.
+    const frames = clip(36, (t) => t % 12 < 4, (f) => [text(f, 'LOW BAT', 40, 30), bar(f, 20, 200, 120, 8)]).frames;
+    const osd = findOsd(frames);
+    const o = { kind: 'analog' as const, amount: 35, denoise: 30, osd: true, damageOnly: false };
+    const whole = repairChain(o, frames, 0, frames.length, { osd });
+    const R = chainRadius(o), track = new OsdTrack(osd);
+    frames.forEach((f) => track.add(f));
+    const parts: Rgba[] = [];
+    for (let from = 0; from < frames.length; from += 9) {
+      const to = Math.min(frames.length, from + 9), lo = Math.max(0, from - R), hi = Math.min(frames.length, to + R);
+      const osdState = track.state(lo + osdInputStart(o, from - lo));
+      parts.push(...repairChain(o, frames.slice(lo, hi), from - lo, to - lo, { osd, osdState }));
+    }
+    expect(parts.length).toBe(whole.length);
+    parts.forEach((p, i) => expect(changed(p, whole[i]), `frame ${i}`).toBe(false));
+  }, 120_000);
+});

@@ -5,7 +5,8 @@
 import { EncodedAudioPacketSource, EncodedPacketSink, VideoSampleSink, type Output, type VideoSample } from 'mediabunny';
 import type { VideoInfo } from '../video.ts';
 import { toGray, type Plane, type Rgba } from './image.ts';
-import { chainRadius, pictureBox, type Box, type CleanOptions, type OsdMask } from './repair.ts';
+import { OsdTrack, PROBES, cropOsd, findOsd } from './osd.ts';
+import { chainRadius, osdInputStart, pictureBox, type Box, type CleanOptions, type OsdMask } from './repair.ts';
 import type { FromWorker, ToWorker } from './worker.ts';
 
 /** Frames repaired per chunk (at least 4 × the radius, so context stays a small share of the work). */
@@ -202,6 +203,25 @@ export async function detectBox(v: VideoInfo, start: number, end: number): Promi
   return bright ? pictureBox(bright) : { x: 0, y: 0, w, h };
 }
 
+/**
+ * The OSD of the cut, as upstream finds it (restoration.clip_mask): PROBES frames spread evenly over
+ * the cut, the mask found on the full frame, then cropped to the picture inside any black bars.
+ */
+export async function detectOsd(v: VideoInfo, start: number, end: number, box: Box, signal?: AbortSignal): Promise<OsdMask> {
+  const w = v.width, h = v.height, sink = new VideoSampleSink(v.track);
+  const ctx = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true })!;
+  const probes: Rgba[] = [];
+  for (let k = 0; k < PROBES; k++) {
+    abortCheck(signal);
+    const s = await sink.getSample(v.first + start + ((end - start) * k) / PROBES);
+    if (!s) continue;
+    s.draw(ctx, 0, 0, w, h);
+    s.close();
+    probes.push({ w, h, d: ctx.getImageData(0, 0, w, h).data });
+  }
+  return cropOsd(findOsd(probes), box);
+}
+
 interface Lane { worker: Worker; open: Set<number>; repairing: Set<number> }
 
 export interface CleanFramesExtra {
@@ -226,6 +246,12 @@ export async function* cleanFrames(v: VideoInfo, start: number, end: number, opt
   const stats = extra.stats ?? newStats();
   const box = extra.box ?? await detectBox(v, start, end);
   abortCheck(signal);
+  const osdMask = opts.osd ? extra.osd ?? await detectOsd(v, start, end, box, signal) : undefined;
+  // The OSD stage needs the stream history before each chunk (who was on screen up to osd.HOLD frames
+  // back), so every decoded frame also goes through a tracker here, in order. Costs a readback on this
+  // thread, only with OSD removal on.
+  const track = osdMask ? new OsdTrack(osdMask) : null;
+  const tctx = track ? new OffscreenCanvas(W, H).getContext('2d', { willReadFrequently: true })! : null;
   const R = chainRadius(opts), size = chunkFor(R);
   const n = extra.workers ?? poolSize(navigator.hardwareConcurrency || 4, box.w, box.h, size, R);
   stats.workers = n;
@@ -253,7 +279,7 @@ export async function* cleanFrames(v: VideoInfo, start: number, end: number, opt
       poke();
     };
     lane.worker.onerror = (e) => { failed ??= new Error(e.message || 'Clean worker failed'); poke(); };
-    lane.worker.postMessage({ type: 'setup', opts, box, w: W, h: H, osd: extra.osd } satisfies ToWorker);
+    lane.worker.postMessage({ type: 'setup', opts, box, w: W, h: H, osd: osdMask } satisfies ToWorker);
     lanes.push(lane);
   }
   signal.addEventListener('abort', poke, { once: true });
@@ -322,7 +348,8 @@ export async function* cleanFrames(v: VideoInfo, start: number, end: number, opt
     for (const c of step.go) {
       const lane = owner.get(c.id)!;
       lane.repairing.add(c.id);
-      lane.worker.postMessage({ type: 'go', chunk: c.id, lo: c.lo, from: c.from, to: c.to, hi: c.hi } satisfies ToWorker);
+      const osdState = track?.state(c.lo + osdInputStart(opts, c.from - c.lo));
+      lane.worker.postMessage({ type: 'go', chunk: c.id, lo: c.lo, from: c.from, to: c.to, hi: c.hi, osdState } satisfies ToWorker);
       order.push(c);
     }
     order.sort((x, y) => x.id - y.id);
@@ -362,6 +389,10 @@ export async function* cleanFrames(v: VideoInfo, start: number, end: number, opt
       t = performance.now();
       const j = decoded++; // ChunkPlan numbers frames the same way
       stamps[j] = { t: s.timestamp, d: s.duration || 1 / fps };
+      if (track) {
+        s.draw(tctx!, 0, 0, W, H);
+        track.add({ w: box.w, h: box.h, d: tctx!.getImageData(box.x, box.y, box.w, box.h).data });
+      }
       held.set(j, s.toVideoFrame());
       s.close();
       const step = plan.frame(place(s.timestamp, t0, t1));

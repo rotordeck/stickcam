@@ -829,7 +829,8 @@ async function openCompare() {
   setSyncNote('Cleaning this frame…');
   try {
     const t0 = performance.now();
-    const res = await previewFrame(v, t, S.clean.kind === 'auto' && !autoGuess() ? 'auto' : cleanKind(), S.clean.amount);
+    const res = await previewFrame(v, t, S.clean.kind === 'auto' && !autoGuess() ? 'auto' : cleanKind(), S.clean.amount,
+      { denoise: S.clean.denoise, osd: S.clean.osd, damageOnly: S.clean.damageOnly, cut: [S.trim[0], S.trim[1]] });
     const img = (f: Rgba) => new ImageData(new Uint8ClampedArray(f.d), f.w, f.h);
     cmp.width = v.width; cmp.height = v.height;
     cmpImgs = { before: img(res.before), after: img(res.after) };

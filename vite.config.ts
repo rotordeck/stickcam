@@ -1,4 +1,6 @@
+/// <reference types="vitest/config" />
 import { defineConfig, type Plugin } from 'vite';
+import { configDefaults } from 'vitest/config';
 import { mkdirSync, writeFileSync } from 'node:fs';
 
 // Dev only: lets the page POST a finished export to /__dev/save so it can be inspected with ffprobe (.dev-out/).
@@ -26,4 +28,6 @@ export default defineConfig({
   build: { target: 'es2022' },
   optimizeDeps: { exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'] },
   plugins: [devSave()],
+  // Agent worktrees under .claude/ carry their own copies of the tests.
+  test: { exclude: [...configDefaults.exclude, '.claude/**'] },
 });

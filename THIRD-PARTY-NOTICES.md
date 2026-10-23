@@ -2,9 +2,9 @@
 
 ## FPV DVR Cleaner
 
-`src/clean/analog.ts`, `src/clean/hdzero.ts`, `src/clean/frames.ts` and parts of `src/clean/repair.ts` are ports of
+`src/clean/analog.ts`, `hdzero.ts`, `osd.ts`, `fuse.ts`, `frames.ts` and parts of `src/clean/repair.ts` are ports of
 FPV DVR Cleaner (https://github.com/Bratwurstexe/FPV_DVR_CLEANER, commit `264d232`), `src/flugbild/analog.py`,
-`digital.py`, `pipeline.py` and `restoration.py`.
+`digital.py`, `osd.py`, `upscale.py`, `pipeline.py` and `restoration.py`. `scripts/clean_ref.py` calls that engine for parity checks.
 
 ```
 MIT License

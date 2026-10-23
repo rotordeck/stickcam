@@ -8,7 +8,7 @@ import {
 } from 'mediabunny';
 import type { VideoInfo } from '../video.ts';
 import { toGray, type Rgba } from './image.ts';
-import { cacheKey, cacheName, cleanFrames, cutAudio, detectBox, logStats, newStats } from './pool.ts';
+import { cacheKey, cacheName, cleanFrames, cutAudio, detectBox, detectOsd, logStats, newStats } from './pool.ts';
 import { chainRadius, crop, guessKind, paste, pictureBox, repairChain, type Box, type CleanKind, type CleanOptions, type OsdMask } from './repair.ts';
 
 export interface CleanJob {
@@ -160,9 +160,18 @@ export async function cleanCut(job: CleanJob): Promise<CleanResult> {
   return { file, kind, box, audio: audio.copied, frames: written, cached: false };
 }
 
+// The OSD mask of a cut takes ~1 s to find; keep the last one so repeated frame checks stay quick
+// (upstream's bridge caches it the same way).
+let lastOsd: { key: string; mask: OsdMask } | null = null;
+async function cutOsd(v: VideoInfo, start: number, end: number, box: Box): Promise<OsdMask> {
+  const key = `${v.url}|${start}|${end}`;
+  if (lastOsd?.key !== key) lastOsd = { key, mask: await detectOsd(v, start, end, box) };
+  return lastOsd.mask;
+}
+
 /** One frame through the repair, for a before/after check: the frame at `t` (video seconds) and its neighbours. */
 export async function previewFrame(v: VideoInfo, t: number, kind: CleanKind | 'auto', amount: number,
-  extra: { denoise?: number; osd?: boolean; damageOnly?: boolean; osdMask?: OsdMask } = {}): Promise<{ before: Rgba; after: Rgba; kind: CleanKind }> {
+  extra: { denoise?: number; osd?: boolean; damageOnly?: boolean; osdMask?: OsdMask; cut?: [number, number] } = {}): Promise<{ before: Rgba; after: Rgba; kind: CleanKind }> {
   const sink = new VideoSampleSink(v.track);
   const ctx = new OffscreenCanvas(v.width, v.height).getContext('2d', { willReadFrequently: true })!;
   const kinds: CleanKind[] = kind === 'auto' ? ['analog', 'hdzero'] : [kind];
@@ -178,12 +187,15 @@ export async function previewFrame(v: VideoInfo, t: number, kind: CleanKind | 'a
   if (!frames.length) throw new Error('No frame at this time.');
   let c = 0;
   times.forEach((x, i) => { if (Math.abs(x - at) < Math.abs(times[c] - at)) c = i; });
-  const box = pictureBox(toGray(frames[c]));
+  const [start, end] = extra.cut ?? [0, v.duration];
+  // With OSD removal the box must be the cut's, as the clean pass crops the mask to it.
+  const box = extra.osd ? await detectBox(v, start, end) : pictureBox(toGray(frames[c]));
   const k = kind === 'auto' ? guessKind(v.width, v.height, box) : kind;
+  const osdMask = extra.osd ? extra.osdMask ?? await cutOsd(v, start, end, box) : undefined;
   // One frame is quick enough for the main thread (~0.1–0.3 s).
   await new Promise((r) => setTimeout(r, 0));
   const o = cleanOptions({ amount, ...extra }, k), r = chainRadius(o);
   const lo = Math.max(0, c - r), hi = Math.min(frames.length, c + r + 1);
-  const [inner] = repairChain(o, frames.slice(lo, hi).map((f) => crop(f, box)), c - lo, c - lo + 1, { osd: extra.osdMask });
+  const [inner] = repairChain(o, frames.slice(lo, hi).map((f) => crop(f, box)), c - lo, c - lo + 1, { osd: osdMask });
   return { before: frames[c], after: paste(inner, box, v.width, v.height), kind: k };
 }
