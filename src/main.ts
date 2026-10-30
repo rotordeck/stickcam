@@ -6,6 +6,7 @@ import { decodeFlight, listFlights, repairLegacyDump, type FlightInfo } from './
 import { buildTrack, prepare, type FlightData, type Track } from './track.ts';
 import { analyzeMotion, type Motion } from './motion.ts';
 import { makeFreestyleDemo } from './demo.ts';
+import { world } from './world/index.ts';
 import { PRESETS, presetById, type Style } from './render/style.ts';
 import { DEFAULT_SETTINGS, SIZE_PRESETS, computeLayout, type Settings } from './render/layout.ts';
 import { createScene, renderFrame, type Scene } from './render/draw.ts';
@@ -277,7 +278,36 @@ function rebuildScene() {
 const skyWorld = $('skyWorld');
 const SKY_WIN = 0.3, SKY_BANK = 32, SKY_PITCH = 0.12; // s, degrees at full roll, horizon shift (fraction of world) at full pitch
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+
+// The hero is a live 3D world (src/world). Without WebGL, or with reduced motion, the CSS gradient below stays.
+const skyEl = skyWorld.parentElement!;
+function mountWorld() {
+  if (world.mounted || reducedMotion.matches) return;
+  if (world.mount(skyWorld, { onLost: unmountWorld })) skyEl.classList.add('world-on');
+}
+function unmountWorld() { world.dispose(); skyEl.classList.remove('world-on'); updateSky(); }
+reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) unmountWorld(); else mountWorld(); });
+mountWorld();
+let skyWinFrame = -1;
+const skyIn = { roll: 0, pitch: 0, yaw: 0, throttle: 0 };
+
 function updateSky() {
+  if (world.mounted) {
+    // idle: the world flies its own autopilot. driven: it follows the sticks while the log plays.
+    const driven = S.playing && !!S.cur && !S.video && stage.dataset.bg === 'sky';
+    world.setActive(stage.dataset.bg === 'sky');
+    world.setMode(driven ? 'driven' : 'idle');
+    if (driven && S.frame !== skyWinFrame) {
+      skyWinFrame = S.frame;
+      const { roll, pitch, yaw, throttle, live, fps } = S.cur!.track;
+      const n = Math.max(1, Math.round(SKY_WIN * fps));
+      let r = 0, p = 0, y = 0, t = 0;
+      for (let i = Math.max(0, S.frame - n + 1); i <= S.frame; i++) if (live[i]) { r += roll[i]; p += pitch[i]; y += yaw[i]; t += throttle[i]; }
+      skyIn.roll = r / n; skyIn.pitch = p / n; skyIn.yaw = y / n; skyIn.throttle = t / n;
+      world.update(skyIn);
+    }
+    return;
+  }
   const fly = S.playing && !!S.cur && !reducedMotion.matches && stage.dataset.bg === 'sky' && !S.video;
   skyWorld.classList.toggle('flying', fly);
   if (!fly) { skyWorld.style.transform = ''; return; }
