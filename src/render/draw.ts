@@ -15,6 +15,8 @@ export interface Scene {
   tint: OffscreenCanvas; tintc: OffscreenCanvasRenderingContext2D;
   b1: OffscreenCanvas; b1c: OffscreenCanvasRenderingContext2D;
   b2: OffscreenCanvas; b2c: OffscreenCanvasRenderingContext2D;
+  /** Breakup strength 0..1 of the footage per OUTPUT frame (damage scan mapped through the clock), for `signalGlitch`. */
+  breaks?: Float32Array;
 }
 
 const ctx2d = (c: OffscreenCanvas) => c.getContext('2d') as OffscreenCanvasRenderingContext2D;
@@ -227,8 +229,9 @@ export function renderFrame(ctx: Ctx2D, sc: Scene, i: number, background: string
   ctx.globalAlpha = 1;
   drawText(ctx, F);
 
-  // 5. Glitch: on impacts, slice horizontal bands and shove them sideways.
-  if (s.glitch > 0) {
+  // 5. Glitch: on impacts, and where the footage broke up (signalGlitch), slice horizontal bands and shove them sideways.
+  const sig = s.signalGlitch > 0 && sc.breaks ? (sc.breaks[i] ?? 0) * s.signalGlitch : 0;
+  if (s.glitch > 0 || sig > 0) {
     let g = 0;
     for (const e of recent) {
       const age = (i - e.frame) / fps;
@@ -239,6 +242,7 @@ export function renderFrame(ctx: Ctx2D, sc: Scene, i: number, background: string
     const R = rng(hash(i, 4242, 7));
     if (R() < 0.012) g += 0.5; // the odd idle flicker
     g *= s.glitch * C;
+    g += 1.5 * sig * C;
     if (g > 0.05) {
       const t = sc.tintc;
       t.globalCompositeOperation = 'copy'; t.drawImage(ctx.canvas, 0, 0);

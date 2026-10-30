@@ -26,6 +26,7 @@ export interface Style {
   readout: boolean; // live numeric stick readout under the gimbals
   popupStyle: 'pop' | 'terminal'; // bouncy game text, or typed-out terminal lines
   glitch: number; // horizontal glitch bands on impacts
+  signalGlitch: number; // 0..1 glitch bands where the video's signal broke up (needs a video and its damage scan)
   labelMap: Record<string, string>; // rename popup labels (e.g. WASTED → FATAL ERROR)
 }
 
@@ -40,7 +41,7 @@ const BASE: Style = {
   shock: 0, shake: 0, popups: false, stats: false,
   font: "{px}px Bungee, Impact, 'Arial Black', sans-serif", textColor: '#ffffff', textStroke: 'rgba(0,0,0,0.6)',
   flame: 0, embers: 0, scan: 0, chroma: 0, thrBar: false, labels: false, intro: false,
-  dotShape: 'circle', rainbow: false, sparkShape: 'streak', readout: false, popupStyle: 'pop', glitch: 0, labelMap: {},
+  dotShape: 'circle', rainbow: false, sparkShape: 'streak', readout: false, popupStyle: 'pop', glitch: 0, signalGlitch: 0, labelMap: {},
 };
 
 export const PRESETS: Preset[] = [
@@ -62,7 +63,7 @@ export const PRESETS: Preset[] = [
       ...BASE, plate: 'rgba(10,0,30,0.4)', ring: '#ffe14d', ringW: 0.05, cross: 'rgba(255,225,77,0.25)', grid: 0,
       dot: '#ffe14d', dotR: 0.13, dotRing: '#ffffff', hot: '#ff3b3b', glow: 0.3, bloom: 0.9, trail: 0.3, trailW: 0.12,
       sparks: 1, shock: 1, shake: 0.12, popups: true, stats: true, flame: 0.5, thrBar: true, intro: true,
-      textColor: '#ffe14d', textStroke: '#b0006a',
+      signalGlitch: 0.6, textColor: '#ffe14d', textStroke: '#b0006a',
     },
   },
   {
@@ -71,7 +72,7 @@ export const PRESETS: Preset[] = [
       ...BASE, frame: 'square', plate: 'rgba(30,0,50,0.45)', ring: '#ff2bd6', ringW: 0.035, cross: 'rgba(0,240,255,0.35)', grid: 4,
       dot: '#00f0ff', dotR: 0.11, dotRing: '#ffffff', hot: '#ff2bd6', glow: 0.3, bloom: 0.7, trail: 0.6, trailW: 0.1,
       sparks: 0.4, sparkColors: ['#ffffff', '#00f0ff', '#ff2bd6', '#7a00ff'], shock: 0.7, shake: 0.05, popups: true,
-      scan: 0.5, chroma: 0.05, labels: true, intro: true, textColor: '#00f0ff', textStroke: '#ff2bd6',
+      scan: 0.5, chroma: 0.05, signalGlitch: 0.8, labels: true, intro: true, textColor: '#00f0ff', textStroke: '#ff2bd6',
       font: "italic 900 {px}px Orbitron, 'Arial Black', sans-serif",
     },
   },
@@ -102,7 +103,7 @@ export const PRESETS: Preset[] = [
       dot: '#33ff66', dotR: 0.1, dotRing: null, dotShape: 'square', hot: '#e0ffe6', glow: 0.5, bloom: 0.6, trail: 0.5, trailW: 0.07,
       sparks: 1, sparkShape: 'glyph', sparkColors: ['#f0fff2', '#7dff9a', '#2bd94f', '#0d7a26'],
       shock: 0.45, shake: 0.05, popups: true, popupStyle: 'terminal', stats: true, thrBar: true, readout: true, intro: true,
-      scan: 0.6, chroma: 0.02, glitch: 1,
+      scan: 0.6, chroma: 0.02, glitch: 1, signalGlitch: 1,
       font: "{px}px VT323, 'Courier New', monospace", textColor: '#33ff66', textStroke: 'rgba(0,0,0,0.85)',
       labelMap: { WASTED: 'FATAL ERROR: CRASH', 'PUNCH IT': 'OVERCLOCK', ARMED: 'ACCESS GRANTED', DISARMED: 'CONNECTION CLOSED', 'FULL SEND': 'MAX_POWER', 'HANG TIME': 'NULL_THRUST' },
     },
