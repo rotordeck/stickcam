@@ -30,6 +30,14 @@ Everything runs in the browser. The log never leaves your machine, and the site 
 
 **Tight crop** renders only the HUD plus room for effects, which is much faster and smaller; you position it in your editor. Pick the footage height it is meant for, so the gimbals come out at the right pixel size.
 
+## Licence
+
+StickCam is free software under the **GNU Affero General Public License v3.0 or later** (`AGPL-3.0-or-later`). See [`LICENSE`](LICENSE).
+
+It runs entirely in the browser, so the AGPL's network clause matters here: if you host a modified version, users are entitled to the source of what you are serving them.
+
+Third-party components and their licences are listed in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
 ## Develop
 
 Resuming work? Start with [`CLAUDE.md`](CLAUDE.md) and [`docs/architecture.md`](docs/architecture.md).
