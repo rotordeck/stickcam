@@ -4,6 +4,8 @@ Turn a Betaflight blackbox log into a stick-cam overlay video, from a clean whit
 
 Everything runs in the browser. The log never leaves your machine, and the site is plain static files.
 
+**Live: <https://stickcam.fraiponts.workers.dev>** — open it and drop a log, or press one of the samples.
+
 ## Use it
 
 1. Drop a `.bbl`/`.bfl` log, or pick a sample. Multi-flight files show a flight list.
@@ -64,3 +66,15 @@ Layout:
 - `public/samples/`: short real-log clips, cut by `node scripts/make-samples.ts`.
 
 In `npm run dev`, `window.__stickcam.exportTo(format, name)` exports without a download prompt and writes the file to `.dev-out/` for checks with `ffprobe`.
+
+## Deploy
+
+The site is static, so any host works. The live one is a Cloudflare Worker serving `dist/` as static assets (`wrangler.jsonc`):
+
+```sh
+npm run deploy          # npm run build + wrangler deploy → https://stickcam.fraiponts.workers.dev
+```
+
+Pushing to `main` does the same in CI (`.github/workflows/cloudflare.yml`) once the repo has `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
+
+Self-hosting: `npm run build` and serve `dist/` with any static server. With a sub-path, build with `BASE=/stickcam/ npm run build`. Nothing is uploaded anywhere; the app is fully client-side, so a copy of `dist/` is a complete install.

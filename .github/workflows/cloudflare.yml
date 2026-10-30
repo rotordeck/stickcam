@@ -1,0 +1,37 @@
+name: Deploy to Cloudflare Workers
+# StickCam is plain static files (dist/), served by Cloudflare Workers static assets.
+# `wrangler.jsonc` pins the worker name (stickcam) and the assets directory.
+#
+# Needs two repository secrets:
+#   CLOUDFLARE_API_TOKEN   token with "Workers Scripts: Edit" for the account
+#   CLOUDFLARE_ACCOUNT_ID  the account tag from the Cloudflare dashboard
+#
+# Without those secrets the job fails at the deploy step; tests and the build still run.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Publish to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
