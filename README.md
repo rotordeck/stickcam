@@ -4,7 +4,7 @@ Turn a Betaflight blackbox log into a stick-cam overlay video, from a clean whit
 
 Everything runs in the browser. The log never leaves your machine, and the site is plain static files.
 
-**Live: <https://stickcam.fraiponts.workers.dev>** — open it and drop a log, or press one of the samples.
+**Live: <https://rotordeck.com/stickcam/>** — open it and drop a log, or press one of the samples.
 
 ## Use it
 
@@ -72,7 +72,7 @@ In `npm run dev`, `window.__stickcam.exportTo(format, name)` exports without a d
 The site is static, so any host works. The live one is a Cloudflare Worker serving `dist/` as static assets (`wrangler.jsonc`):
 
 ```sh
-npm run deploy          # npm run build + wrangler deploy → https://stickcam.fraiponts.workers.dev
+npm run build           # produces dist/; publishing happens in the rotordeck.com site build
 ```
 
 Pushing to `main` does the same in CI (`.github/workflows/cloudflare.yml`) once the repo has `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.

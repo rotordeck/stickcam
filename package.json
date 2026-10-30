@@ -2,13 +2,12 @@
   "name": "stickcam",
   "version": "0.1.0",
   "license": "AGPL-3.0-or-later",
-  "description": "Blackbox log → spectacular stick-cam overlay videos, entirely in the browser",
+  "description": "Blackbox log \u2192 spectacular stick-cam overlay videos, entirely in the browser",
   "scripts": {
     "test": "vitest run",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "deploy": "npm run build && npx wrangler deploy"
+    "preview": "vite preview"
   },
   "type": "module",
   "devDependencies": {
