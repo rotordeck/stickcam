@@ -12,9 +12,9 @@ const load = (path: string) => {
 };
 
 describe('decoder + track', () => {
-  const samples = JSON.parse(readFileSync('public/samples/samples.json', 'utf8')) as { file: string; duration: number }[];
+  const samples = JSON.parse(readFileSync('test/fixtures/samples/samples.json', 'utf8')) as { file: string; duration: number }[];
   it.each(samples)('bundled sample $file decodes with sticks in range', ({ file, duration }) => {
-    const [d] = load(`public/samples/${file}`);
+    const [d] = load(`test/fixtures/samples/${file}`);
     expect(d.sig.duration).toBeCloseTo(duration, 1);
     const tr = buildTrack(d, 30, 0, d.sig.duration);
     const live = tr.live.reduce((a, v) => a + v, 0);
@@ -23,7 +23,7 @@ describe('decoder + track', () => {
     for (const v of tr.throttle) expect(v >= 0 && v <= 1).toBe(true);
   });
   it.each(samples)('gentle sample $file invents no throttle timers or tricks', ({ file }) => {
-    const [d] = load(`public/samples/${file}`);
+    const [d] = load(`test/fixtures/samples/${file}`);
     const m = analyzeMotion(d, buildTrack(d, 30, 0, d.sig.duration), { mode: 2 });
     expect(m.events.filter((e) => ['full', 'hang', 'flip', 'roll', 'spin'].includes(e.kind))).toEqual([]);
   });

@@ -8,7 +8,7 @@ import { analyzeMotion, type Motion } from './motion.ts';
 import { makeFreestyleDemo } from './demo.ts';
 import { world } from './world/index.ts';
 import { buildPosePath, poseAt, type Pose, type PosePath } from './world/pose.ts';
-import { ALL_PRESETS, EXPOSED_PRESETS, presetById, type Style } from './render/style.ts';
+import { ALL_PRESETS, presetById, type Style } from './render/style.ts';
 import { DEFAULT_SETTINGS, SIZE_PRESETS, computeLayout, type Settings } from './render/layout.ts';
 import { createScene, renderFrame, type Scene } from './render/draw.ts';
 import { capabilities, runExport, type Format } from './export/export.ts';
@@ -948,7 +948,7 @@ const thumbs = new Map<string, HTMLCanvasElement>();
 function buildPresetCards() {
   const el = $('presets');
   el.innerHTML = '';
-  for (const p of EXPOSED_PRESETS) {
+  for (const p of ALL_PRESETS) {
     const b = document.createElement('button');
     b.className = 'preset' + (p.id === S.presetId ? ' on' : '');
     const cv = document.createElement('canvas');
@@ -993,7 +993,7 @@ function drawThumb(cv: HTMLCanvasElement, st: Style, settings: Settings) {
 let userThumbsFor: Track | null = null;
 function renderThumbs() {
   if (!S.cur) return;
-  for (const p of EXPOSED_PRESETS) {
+  for (const p of ALL_PRESETS) {
     const cv = thumbs.get(p.id);
     if (cv) drawThumb(cv, p.style, S.settings);
   }
@@ -1039,7 +1039,7 @@ function applyLook(p: UserPreset) {
   S.presetId = p.look.presetId;
   S.overrides = structuredClone(p.look.overrides);
   Object.assign(S.settings, p.look.settings);
-  document.querySelectorAll('#presets .preset').forEach((x, i) => x.classList.toggle('on', EXPOSED_PRESETS[i].id === S.presetId));
+  document.querySelectorAll('#presets .preset').forEach((x, i) => x.classList.toggle('on', ALL_PRESETS[i].id === S.presetId));
   buildParams();
   if (modeChanged) { rebuildCur(); drawTimeline(); } else { rebuildScene(); renderThumbs(); }
   saveHash();
@@ -1502,17 +1502,9 @@ async function buildSamples() {
     b.onclick = () => { markSample(id); go(); };
     el.appendChild(b);
   };
+  // One sample only: the synthetic freestyle run. The real .bbl files live in
+  // test/fixtures/samples and are kept for decoder coverage, not shipped as chips.
   add('demo', 'Freestyle demo', 'Synthetic run with flips, rolls, spins and a crash', loadDemo);
-  try {
-    const list: { id: string; title: string; blurb: string; file: string }[] = await (await fetch(`${BASE}samples/samples.json`)).json();
-    for (const s of list) {
-      add(s.id, s.title, s.blurb, async () => {
-        status(`Downloading ${s.title}…`);
-        const buf = new Uint8Array(await (await fetch(`${BASE}samples/${s.file}`)).arrayBuffer());
-        await loadBytes(buf, s.file);
-      });
-    }
-  } catch { /* samples are optional */ }
 }
 
 document.querySelectorAll<HTMLButtonElement>('.bg-pick button').forEach((b) => {
