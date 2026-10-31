@@ -1,3 +1,4 @@
+import { EXPOSED_PRESETS, FREESTYLE, PRESETS, presetById } from '../src/render/style.ts';
 import { describe, expect, it } from 'vitest';
 import { applyImport, defaultChoices, exportFile, lookEquals, parseImport, planImport, sanitizeLook, uniqueName, type Look, type UserPreset } from '../src/presets.ts';
 
@@ -21,7 +22,7 @@ describe('user presets', () => {
 
   it('sanitizes looks', () => {
     const l = sanitizeLook({ presetId: 'gone', overrides: { sparks: 2, bogus: 1, trail: 'x', hot: null, sparkColors: ['#fff'] }, settings: { mode: 1, position: 'sideways', size: 'big' } });
-    expect(l.presetId).toBe('arcade');
+    expect(l.presetId).toBe('freestyle'); // unknown base → the default look
     expect(l.overrides).toEqual({ sparks: 2, hot: null, sparkColors: ['#fff'] });
     expect(l.settings.mode).toBe(1);
     expect(l.settings.position).toBe('bottom');
@@ -61,5 +62,18 @@ describe('user presets', () => {
     expect(uniqueName([preset('A')], 'B')).toBe('B');
     expect(uniqueName([preset('A')], 'a')).toBe('a (2)');
     expect(uniqueName([preset('A'), preset('A (2)')], 'A (2)')).toBe('A (3)');
+  });
+});
+
+describe('built-in styles', () => {
+  it('the picker offers one style, Free style; all eight originals still resolve by id', () => {
+    expect(EXPOSED_PRESETS.map((p) => p.id)).toEqual(['freestyle']);
+    expect(EXPOSED_PRESETS[0].name).toBe('Free style');
+    expect(PRESETS.map((p) => p.id)).toEqual(['clean', 'minimal', 'neon', 'arcade', 'synthwave', 'inferno', 'unicorn', 'hacker']);
+    for (const p of PRESETS) expect(presetById(p.id)).toBe(p);
+    expect(presetById('freestyle')).toBe(FREESTYLE);
+    expect(presetById('nope')).toBe(FREESTYLE);
+    expect(sanitizeLook({ presetId: 'arcade' }).presetId).toBe('arcade');
+    expect(Object.keys(FREESTYLE.style).sort()).toEqual(Object.keys(PRESETS[0].style).sort());
   });
 });

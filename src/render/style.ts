@@ -110,4 +110,27 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-export const presetById = (id: string) => PRESETS.find((p) => p.id === id) ?? PRESETS[0];
+/**
+ * Free style: the one look the page offers. Built only from existing fields, tuned to read over the dusk
+ * world (dark olive ground, purple haze, lime and orange gates): a dark plate and a bright white ring so the
+ * gimbals hold against a busy background, white dots with an orange rim, short warm trails, moderate glow
+ * and a light dusting of sparks.
+ */
+export const FREESTYLE: Preset = {
+  id: 'freestyle', name: 'Free style', blurb: 'Rings, bright dots, light trails and a few sparks',
+  style: {
+    ...BASE, plate: 'rgba(10,12,8,0.42)', ring: 'rgba(255,255,255,0.9)', ringW: 0.045, cross: 'rgba(255,255,255,0.22)', grid: 0,
+    dot: '#ffffff', dotR: 0.14, dotRing: '#ff8a3d', hot: '#ffb347', glow: 0.25, bloom: 0.5, trail: 0.4, trailW: 0.13,
+    sparks: 0.35, sparkColors: ['#ffffff', '#f2ffc4', '#ffcf7a', '#ff8a3d'], intro: true,
+  },
+};
+
+/**
+ * The styles the picker shows. Only Free style for now; to bring the others back, list them here
+ * (e.g. `[FREESTYLE, ...PRESETS]`). Nothing else needs to change.
+ */
+export const EXPOSED_PRESETS: Preset[] = [FREESTYLE];
+/** Every style that resolves by id: the exposed ones and the eight originals (old share links, saved looks). */
+export const ALL_PRESETS: Preset[] = [FREESTYLE, ...PRESETS.filter((p) => p.id !== FREESTYLE.id)];
+
+export const presetById = (id: string) => ALL_PRESETS.find((p) => p.id === id) ?? FREESTYLE;

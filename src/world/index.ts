@@ -1,17 +1,20 @@
 // The hero world: a live three.js dusk scene behind the preview canvas. Public API:
 //   world.mount(container)  -> boolean (false = no WebGL: the host keeps its CSS gradient)
-//   world.setMode('idle' | 'driven')   idle = looping autopilot, driven = the sticks passed to update()
+//   world.setMode('idle' | 'driven' | 'posed')   idle = looping autopilot, driven = the sticks passed to update(),
+//                                               posed = the camera pose passed to setPose() (see pose.ts)
 //   world.update({ roll, pitch, yaw, throttle, dt })   sticks for driven mode (dt only steps a host-driven world)
+//   world.setPose(pose)   camera pose for posed mode: a pure function of the playback frame, set by the host
 //   world.resize(w, h), world.setActive(bool), world.dispose()
 // It runs its own rAF loop (one WebGLRenderer, DPR capped at 2) and stops while the tab is hidden,
 // the container is off screen or display:none, or the host says it is inactive.
 import * as THREE from 'three';
 import { Flight, STEP, type Sticks } from './flight.ts';
 import { Gates } from './gates.ts';
+import type { Pose } from './pose.ts';
 import { FOG_HEX, SUN_DIR, makeSky } from './sky.ts';
 import { Terrain, makeRidges } from './terrain.ts';
 
-export type WorldMode = 'idle' | 'driven';
+export type WorldMode = 'idle' | 'driven' | 'posed';
 export interface WorldInput extends Sticks { dt?: number }
 export interface MountOptions { autoRun?: boolean; onLost?: () => void }
 
@@ -95,6 +98,14 @@ export class World {
   /** Host switch: false pauses rendering (e.g. the preview background is not Sky). */
   setActive(on: boolean) { if (on !== this.enabled) { this.enabled = on; this.sync(); } }
 
+  /** Posed mode: put the camera exactly here (no lag, no integration: the host owns the path). */
+  setPose(p: Pose) {
+    const f = this.flight;
+    f.x = p.x; f.y = p.y; f.z = p.z; f.yaw = p.yaw; f.pitch = p.pitch; f.bank = p.bank; f.speed = p.speed;
+    f.trickRoll = 0; f.trickPitch = 0;
+    if (!this.autoRun) this.render();
+  }
+
   update(i: WorldInput) {
     const c = this.input;
     c.roll = i.roll; c.pitch = i.pitch; c.yaw = i.yaw; c.throttle = i.throttle;
@@ -153,6 +164,7 @@ export class World {
   private advance(dt: number) {
     this.time += dt; this.acc += dt;
     const driven = this.mode === 'driven';
+    if (this.mode === 'posed') this.acc = 0; // the host sets the pose; nothing to integrate
     while (this.acc >= STEP) { this.flight.step(STEP, driven, this.input); this.acc -= STEP; }
     this.sky.uniforms.uTime.value = this.time;
   }

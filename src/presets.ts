@@ -1,7 +1,7 @@
 // The user's own saved looks: localStorage persistence, a JSON file for moving them between machines,
 // and an import plan that finds name clashes. Pure apart from the two storage calls.
 
-import { PRESETS, type Style } from './render/style.ts';
+import { ALL_PRESETS, PRESETS, type Style } from './render/style.ts';
 import { DEFAULT_SETTINGS, type Settings } from './render/layout.ts';
 
 /** The gimbal settings that belong to a look. Output size, fps and format stay with the footage. */
@@ -12,7 +12,7 @@ export interface Look { presetId: string; overrides: Partial<Style>; settings: L
 export interface UserPreset { id: string; name: string; look: Look; updated: number }
 
 export const STORAGE_KEY = 'stickcam.presets.v1';
-const FALLBACK_PRESET = 'arcade';
+const FALLBACK_PRESET = 'freestyle';
 
 // ---------- clean-up of stored or imported data ----------
 
@@ -33,7 +33,7 @@ function validOverride(k: string, v: unknown): boolean {
 
 export function sanitizeLook(raw: unknown): Look {
   const r = isObj(raw) ? raw : {};
-  const presetId = typeof r.presetId === 'string' && PRESETS.some((p) => p.id === r.presetId) ? r.presetId : FALLBACK_PRESET;
+  const presetId = typeof r.presetId === 'string' && ALL_PRESETS.some((p) => p.id === r.presetId) ? r.presetId : FALLBACK_PRESET;
   const overrides: Record<string, unknown> = {};
   if (isObj(r.overrides)) for (const [k, v] of Object.entries(r.overrides)) if (validOverride(k, v)) overrides[k] = v;
   const s = isObj(r.settings) ? r.settings : {};

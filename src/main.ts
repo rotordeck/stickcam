@@ -7,7 +7,8 @@ import { buildTrack, prepare, type FlightData, type Track } from './track.ts';
 import { analyzeMotion, type Motion } from './motion.ts';
 import { makeFreestyleDemo } from './demo.ts';
 import { world } from './world/index.ts';
-import { PRESETS, presetById, type Style } from './render/style.ts';
+import { buildPosePath, poseAt, type Pose, type PosePath } from './world/pose.ts';
+import { ALL_PRESETS, EXPOSED_PRESETS, presetById, type Style } from './render/style.ts';
 import { DEFAULT_SETTINGS, SIZE_PRESETS, computeLayout, type Settings } from './render/layout.ts';
 import { createScene, renderFrame, type Scene } from './render/draw.ts';
 import { capabilities, runExport, type Format } from './export/export.ts';
@@ -37,7 +38,7 @@ const S = {
   data: null as FlightData | null,
   full: null as { track: Track; motion: Motion } | null, // whole flight at 30 fps for the timeline
   trim: [0, 0] as [number, number],
-  presetId: 'arcade',
+  presetId: 'freestyle',
   overrides: {} as Partial<Style>,
   settings: { ...DEFAULT_SETTINGS } as Settings,
   sizeId: '1080p',
@@ -96,7 +97,7 @@ function loadHash() {
   try {
     if (location.hash.length < 2) return;
     const st = JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(1)))));
-    if (st.p && PRESETS.some((p) => p.id === st.p)) S.presetId = st.p;
+    if (st.p && ALL_PRESETS.some((p) => p.id === st.p)) S.presetId = st.p; // hidden presets still resolve (old share links)
     if (st.o && typeof st.o === 'object') S.overrides = st.o;
     if (st.s) Object.assign(S.settings, st.s);
     if (st.z && SIZE_PRESETS.some((z) => z.id === st.z)) S.sizeId = st.z;
@@ -272,7 +273,7 @@ function rebuildScene() {
   updateHint();
 }
 
-// The Sky preview background flies with the sticks while playing: roll banks the horizon, pitch moves it.
+// Fallback (no WebGL): the CSS Sky background flies with the sticks while playing: roll banks the horizon, pitch moves it.
 // Preview only (a DOM layer under the canvas), never exported. The pose is a pure function of the frame,
 // a mean over the last SKY_WIN seconds of sticks, so it stays smooth and seeking can't make it drift.
 const skyWorld = $('skyWorld');
@@ -288,23 +289,21 @@ function mountWorld() {
 function unmountWorld() { world.dispose(); skyEl.classList.remove('world-on'); updateSky(); }
 reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) unmountWorld(); else mountWorld(); });
 mountWorld();
-let skyWinFrame = -1;
-const skyIn = { roll: 0, pitch: 0, yaw: 0, throttle: 0 };
+// With a log playing (or parked mid-flight after a seek), the world camera follows a path computed once per
+// track from the sticks (src/world/pose.ts): pose = f(frame), so scrubbing shows the same view every time.
+let posePath: PosePath | null = null, poseFor: Track | null = null;
+const pose: Pose = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0, bank: 0, speed: 0 };
 
 function updateSky() {
   if (world.mounted) {
-    // idle: the world flies its own autopilot. driven: it follows the sticks while the log plays.
-    const driven = S.playing && !!S.cur && !S.video && stage.dataset.bg === 'sky';
+    // idle: the world flies its own autopilot (first visit, demo parked at the start). posed: it obeys the sticks.
+    const posed = !!S.cur && !S.video && stage.dataset.bg === 'sky' && (S.playing || S.frame > 0);
     world.setActive(stage.dataset.bg === 'sky');
-    world.setMode(driven ? 'driven' : 'idle');
-    if (driven && S.frame !== skyWinFrame) {
-      skyWinFrame = S.frame;
-      const { roll, pitch, yaw, throttle, live, fps } = S.cur!.track;
-      const n = Math.max(1, Math.round(SKY_WIN * fps));
-      let r = 0, p = 0, y = 0, t = 0;
-      for (let i = Math.max(0, S.frame - n + 1); i <= S.frame; i++) if (live[i]) { r += roll[i]; p += pitch[i]; y += yaw[i]; t += throttle[i]; }
-      skyIn.roll = r / n; skyIn.pitch = p / n; skyIn.yaw = y / n; skyIn.throttle = t / n;
-      world.update(skyIn);
+    world.setMode(posed ? 'posed' : 'idle');
+    if (posed) {
+      const tr = S.cur!.track;
+      if (poseFor !== tr || !posePath) { posePath = buildPosePath(tr); poseFor = tr; }
+      world.setPose(poseAt(posePath, S.frame, pose));
     }
     return;
   }
@@ -346,7 +345,7 @@ function setPlaying(on: boolean) {
   S.playing = on && !!S.cur;
   if (S.playing) closeCompare();
   $('play').textContent = S.playing ? '❚❚' : '▶';
-  updateSky(); // pausing eases the horizon back to level
+  updateSky(); // the world holds the pose of the paused frame (back to the autopilot at frame 0)
   cancelAnimationFrame(raf);
   if (!S.playing) { if (S.video) vid.pause(); return; }
   if (S.video) {
@@ -949,7 +948,7 @@ const thumbs = new Map<string, HTMLCanvasElement>();
 function buildPresetCards() {
   const el = $('presets');
   el.innerHTML = '';
-  for (const p of PRESETS) {
+  for (const p of EXPOSED_PRESETS) {
     const b = document.createElement('button');
     b.className = 'preset' + (p.id === S.presetId ? ' on' : '');
     const cv = document.createElement('canvas');
@@ -994,7 +993,7 @@ function drawThumb(cv: HTMLCanvasElement, st: Style, settings: Settings) {
 let userThumbsFor: Track | null = null;
 function renderThumbs() {
   if (!S.cur) return;
-  for (const p of PRESETS) {
+  for (const p of EXPOSED_PRESETS) {
     const cv = thumbs.get(p.id);
     if (cv) drawThumb(cv, p.style, S.settings);
   }
@@ -1040,7 +1039,7 @@ function applyLook(p: UserPreset) {
   S.presetId = p.look.presetId;
   S.overrides = structuredClone(p.look.overrides);
   Object.assign(S.settings, p.look.settings);
-  document.querySelectorAll('#presets .preset').forEach((x, i) => x.classList.toggle('on', PRESETS[i].id === S.presetId));
+  document.querySelectorAll('#presets .preset').forEach((x, i) => x.classList.toggle('on', EXPOSED_PRESETS[i].id === S.presetId));
   buildParams();
   if (modeChanged) { rebuildCur(); drawTimeline(); } else { rebuildScene(); renderThumbs(); }
   saveHash();
